@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# Single-command deploy. Orchestrates:
+#   1. terraform apply (Hetzner VPS + Cloudflare DNS + firewall)
+#   2. wait for SSH + cloud-init to finish
+#   3. wait for DNS to propagate
+#   4. render Caddyfile + .env from templates
+#   5. rsync compose/ to /opt/hermes-client/compose/
+#   6. docker compose up -d on the VPS
+#   7. wait for HTTPS to come up with a real LE cert
+#   8. smoke-test.sh
+#   9. append-inventory.sh
+#
+# Idempotent: rerunning against an existing slug is a no-op for unchanged
+# inputs (terraform converges, rsync only ships diffs, compose up -d is a
+# no-op when nothing changed).
+#
+# Usage:
+#   bin/deploy-client <slug> --domain example.com [flags]
+#
+# Required env:
+#   HCLOUD_TOKEN           Hetzner Cloud API token
+#   CLOUDFLARE_API_TOKEN   Cloudflare API token (Zone:Read, DNS:Edit)
+#
+# Flags:
+#   --domain DOMAIN        parent domain (required)
+#   --location LOC         Hetzner location (default: nbg1)
+#   --size TYPE            Hetzner server type (default: cx22)
+#   --image-tag TAG        app image tag for inventory (default: m1-whoami)
+#   --acme-email EMAIL     Let's Encrypt contact (default: ops+<slug>@<domain>)
+#   --skip-smoke           skip smoke tests (debugging only)
+#   --plan-only            terraform plan, then exit
+
+set -euo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+usage() {
+  cat >&2 <<EOF
+Usage: $0 <slug> --domain DOMAIN [flags]
+
+Required:
+  slug                    Client slug (3-32 lowercase alnum/hyphen)
+  --domain DOMAIN         Parent domain in Cloudflare
+
+Flags:
+  --location LOC          Hetzner location (default: nbg1)
+  --size TYPE             Hetzner server type (default: cx22)
+  --image-tag TAG         App image tag for inventory (default: m1-whoami)
+  --acme-email EMAIL      Let's Encrypt contact (default: ops+<slug>@<domain>)
+  --cloudflare-zone-id ID Cloudflare Zone ID (required unless in tfvars)
+  --skip-smoke            Skip smoke tests
+  --plan-only             terraform plan, then exit
+
+Env required: HCLOUD_TOKEN, CLOUDFLARE_API_TOKEN
+EOF
+  exit 2
+}
+
+# --- arg parsing ---
+[[ $# -ge 1 ]] || usage
+SLUG="$1"; shift
+
+DOMAIN=""
+LOCATION="nbg1"
+SIZE="cx22"
+IMAGE_TAG="m1-whoami"
+ACME_EMAIL=""
+CF_ZONE_ID=""
+SKIP_SMOKE=0
+PLAN_ONLY=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --domain)              DOMAIN="$2"; shift 2 ;;
+    --location)            LOCATION="$2"; shift 2 ;;
+    --size)                SIZE="$2"; shift 2 ;;
+    --image-tag)           IMAGE_TAG="$2"; shift 2 ;;
+    --acme-email)          ACME_EMAIL="$2"; shift 2 ;;
+    --cloudflare-zone-id)  CF_ZONE_ID="$2"; shift 2 ;;
+    --skip-smoke)          SKIP_SMOKE=1; shift ;;
+    --plan-only)           PLAN_ONLY=1; shift ;;
+    -h|--help)             usage ;;
+    *) fatal "unknown arg: $1" ;;
+  esac
+done
+
+# --- validation ---
+validate_slug "$SLUG"
+[[ -n "$DOMAIN" ]] || fatal "--domain is required"
+validate_domain "$DOMAIN"
+require_env HCLOUD_TOKEN CLOUDFLARE_API_TOKEN
+require_cmd terraform ssh scp rsync dig curl openssl jq
+
+FQDN="${SLUG}.${DOMAIN}"
+ACME_EMAIL="${ACME_EMAIL:-ops+${SLUG}@${DOMAIN}}"
+
+info "slug=$SLUG fqdn=$FQDN location=$LOCATION size=$SIZE image_tag=$IMAGE_TAG"
+
+# --- preflight: DNS collision check ---
+existing="$(dig +short @1.1.1.1 "$FQDN" A | tail -n1 || true)"
+if [[ -n "$existing" ]]; then
+  warn "$FQDN already resolves to $existing — assuming this is a re-deploy of the same slug"
+fi
+
+# --- 1. terraform apply ---
+INFRA_DIR="$REPO_ROOT/infra"
+TFVARS_FILE="$INFRA_DIR/terraform.tfvars"
+[[ -f "$TFVARS_FILE" ]] || fatal "missing $TFVARS_FILE — copy terraform.tfvars.example and fill in"
+
+info "terraform init"
+terraform -chdir="$INFRA_DIR" init -input=false >/dev/null
+
+TF_VAR_ARGS=(
+  -var "slug=$SLUG"
+  -var "domain=$DOMAIN"
+  -var "hcloud_location=$LOCATION"
+  -var "hcloud_server_type=$SIZE"
+  -var "image_tag=$IMAGE_TAG"
+)
+[[ -n "$CF_ZONE_ID" ]] && TF_VAR_ARGS+=(-var "cloudflare_zone_id=$CF_ZONE_ID")
+
+if [[ "$PLAN_ONLY" -eq 1 ]]; then
+  info "terraform plan (--plan-only)"
+  terraform -chdir="$INFRA_DIR" plan -input=false "${TF_VAR_ARGS[@]}"
+  exit 0
+fi
+
+info "terraform apply"
+terraform -chdir="$INFRA_DIR" apply -input=false -auto-approve "${TF_VAR_ARGS[@]}"
+
+# --- capture outputs ---
+IPV4="$(terraform -chdir="$INFRA_DIR" output -raw ipv4)"
+SSH_HOST="$(terraform -chdir="$INFRA_DIR" output -raw ssh_host)"
+OUT_FQDN="$(terraform -chdir="$INFRA_DIR" output -raw fqdn)"
+[[ "$OUT_FQDN" == "$FQDN" ]] || fatal "fqdn mismatch: tf=$OUT_FQDN expected=$FQDN"
+
+ok "vps ready: $SSH_HOST ($IPV4)"
+
+# --- 2. wait for ssh + cloud-init ---
+"$REPO_ROOT/scripts/wait-for-ssh.sh" "$SSH_HOST"
+
+# --- 3. wait for DNS propagation ---
+"$REPO_ROOT/scripts/wait-for-dns.sh" "$FQDN" "$IPV4"
+
+# --- 4. render templates ---
+RENDER_DIR="$(mktemp -d)"
+trap 'rm -rf "$RENDER_DIR"' EXIT
+
+info "rendering Caddyfile + .env"
+sed \
+  -e "s|{{FQDN}}|$FQDN|g" \
+  -e "s|{{ACME_EMAIL}}|$ACME_EMAIL|g" \
+  -e "s|{{APP_UPSTREAM}}|app:80|g" \
+  "$REPO_ROOT/compose/Caddyfile.tmpl" > "$RENDER_DIR/Caddyfile"
+
+cat > "$RENDER_DIR/.env" <<EOF
+COMPOSE_SLUG=$SLUG
+FQDN=$FQDN
+ACME_EMAIL=$ACME_EMAIL
+APP_IMAGE=traefik/whoami:v1.10
+APP_UPSTREAM=app:80
+EOF
+
+# --- 5. rsync compose/ + rendered files ---
+info "syncing compose stack to $SSH_HOST"
+rsync -az --delete \
+  --exclude '.env' \
+  --exclude 'Caddyfile' \
+  --exclude 'Caddyfile.local' \
+  --exclude '.env.example' \
+  --exclude 'docker-compose.local.yml' \
+  -e "ssh -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR" \
+  "$REPO_ROOT/compose/" \
+  "$SSH_HOST:/opt/hermes-client/compose/"
+
+scp_remote "$RENDER_DIR/Caddyfile" "$SSH_HOST:/opt/hermes-client/compose/Caddyfile"
+scp_remote "$RENDER_DIR/.env"      "$SSH_HOST:/opt/hermes-client/compose/.env"
+ssh_remote "$SSH_HOST" "chmod 600 /opt/hermes-client/compose/.env"
+
+# --- 6. docker compose up -d ---
+info "docker compose up -d"
+ssh_remote "$SSH_HOST" "cd /opt/hermes-client/compose && sudo docker compose pull --quiet && sudo docker compose up -d --remove-orphans"
+
+# --- 7. wait for HTTPS ---
+"$REPO_ROOT/scripts/wait-for-https.sh" "https://$FQDN/health"
+
+# --- 8. smoke tests ---
+if [[ "$SKIP_SMOKE" -eq 1 ]]; then
+  warn "smoke tests skipped"
+else
+  "$REPO_ROOT/scripts/smoke-test.sh" "$FQDN" --ssh-host "$SSH_HOST"
+fi
+
+# --- 9. inventory ---
+"$REPO_ROOT/scripts/append-inventory.sh" "$SLUG" "$FQDN" "$IPV4" "$IMAGE_TAG"
+
+ok "deploy complete"
+info "URL:  https://$FQDN/"
+info "SSH:  ssh $SSH_HOST"
+info "next: review docs/client-inventory.md and commit (no secrets!)"

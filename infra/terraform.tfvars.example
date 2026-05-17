@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars and fill in. Never commit the real file.
+# terraform.tfvars is in .gitignore.
+
+slug   = "demo"
+domain = "example.com"
+
+# --- Hetzner ---
+hcloud_location    = "nbg1"     # nbg1 / fsn1 / hel1 / ash / hil
+hcloud_server_type = "cx22"     # cheapest 2 vCPU / 4 GB Intel-x86 plan
+hcloud_image       = "ubuntu-24.04"
+
+# --- SSH ---
+# Provide the public-key strings, not file paths. Multiple keys allowed.
+ssh_public_keys = [
+  "ssh-ed25519 AAAA... operator@laptop",
+]
+
+# Optional: lock SSH to specific CIDRs. Default is open (0.0.0.0/0, ::/0).
+# allowed_ssh_cidrs = ["203.0.113.42/32"]
+
+# --- Cloudflare ---
+# Get this from the Cloudflare dashboard sidebar for your zone.
+cloudflare_zone_id = "00000000000000000000000000000000"
+cloudflare_proxied = false      # must be false for HTTP-01 ACME
+dns_ttl            = 300
+
+# --- Inventory ---
+image_tag = "m1-whoami"

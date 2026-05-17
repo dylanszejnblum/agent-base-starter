@@ -1,0 +1,53 @@
+# Caddyfile template. Rendered by bin/deploy-client into compose/Caddyfile
+# before being shipped to the VPS. Substitutions:
+#   {{FQDN}}         -> acme.example.com
+#   {{ACME_EMAIL}}   -> ops@example.com
+#   {{APP_UPSTREAM}} -> app:80 (compose service name + port)
+
+{
+	email {{ACME_EMAIL}}
+	# Use the production CA. To debug ACME issues, swap to:
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+	servers {
+		protocols h1 h2 h3
+	}
+	admin off
+}
+
+{{FQDN}} {
+	encode zstd gzip
+
+	# Security headers — sensible defaults; tune per app.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+
+	# Health endpoint Caddy answers directly. The smoke test polls this.
+	@health path /health
+	respond @health 200 {
+		body `{"status":"ok","fqdn":"{{FQDN}}"}`
+		close
+	}
+
+	reverse_proxy {{APP_UPSTREAM}} {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+		# Surface upstream failures cleanly.
+		fail_duration 30s
+		max_fails 3
+		unhealthy_status 5xx
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10mb
+			roll_keep 5
+			roll_keep_for 720h
+		}
+		format json
+	}
+}

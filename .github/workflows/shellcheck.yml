@@ -1,0 +1,30 @@
+name: shellcheck
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bin/**'
+      - 'scripts/**'
+      - '.github/workflows/shellcheck.yml'
+  pull_request:
+    paths:
+      - 'bin/**'
+      - 'scripts/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ludeeus/action-shellcheck@2.0.0
+        env:
+          SHELLCHECK_OPTS: -e SC1091   # source-not-found is expected for cross-dir sourcing
+        with:
+          scandir: '.'
+          ignore_paths: 'compose'
+          format: gcc

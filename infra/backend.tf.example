@@ -1,0 +1,33 @@
+# Example remote state backend. Copy to `backend.tf` and fill in.
+# Local state is fine for the first M1 deploy; switch to remote before M3.
+#
+# Recommendation: Backblaze B2 with the S3-compatible API.
+# Free tier: 10 GB stored, 1 GB/day egress — more than enough for TF state.
+#
+# Setup:
+#   1. Create a B2 bucket per environment, e.g. `agent-base-tfstate`.
+#   2. Create an Application Key scoped to that bucket.
+#   3. Export:
+#        AWS_ACCESS_KEY_ID=<b2-key-id>
+#        AWS_SECRET_ACCESS_KEY=<b2-application-key>
+#        AWS_ENDPOINT_URL_S3=https://s3.<region>.backblazeb2.com
+#   4. `terraform init -migrate-state`
+
+terraform {
+  backend "s3" {
+    bucket = "agent-base-tfstate"
+    key    = "clients/${terraform.workspace}.tfstate"
+    region = "us-east-005" # B2 region; ignored by B2 but required by AWS provider validation
+
+    # B2 compatibility flags
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    use_path_style              = true
+
+    endpoints = {
+      s3 = "https://s3.us-east-005.backblazeb2.com"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+# Local dev override. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up
+#
+# Changes vs prod:
+#   - Caddy binds to 8080/8443 to avoid host port conflicts.
+#   - FQDN defaults to localhost; Caddy serves self-signed.
+#   - No ACME — Caddy's `internal` issuer signs locally.
+
+services:
+  caddy:
+    ports: !override
+      - "8080:80"
+      - "8443:443"
+    environment:
+      FQDN: ${FQDN:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-local@example.invalid}
+      CADDY_LOCAL: "true"
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config

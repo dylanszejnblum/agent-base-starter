@@ -1,0 +1,164 @@
+#cloud-config
+# Rendered by Terraform via templatefile(). Variables: slug, fqdn, ssh_public_keys.
+# This runs once on first boot. Edits require server re-creation.
+
+hostname: ${slug}
+fqdn: ${fqdn}
+preserve_hostname: false
+manage_etc_hosts: true
+
+# --- users ---
+# `deploy` is the operator/support user. NOPASSWD sudo limited to docker only,
+# so a compromised deploy session can't reconfigure the host arbitrarily.
+# `hermes` exists as a non-shell user so containers can map a stable UID.
+users:
+  - name: deploy
+    groups: [sudo, docker]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD: /usr/bin/docker, /usr/bin/docker compose, /usr/bin/systemctl restart docker"]
+    lock_passwd: true
+    ssh_authorized_keys:
+%{ for key in ssh_public_keys ~}
+      - ${key}
+%{ endfor ~}
+  - name: hermes
+    system: true
+    shell: /usr/sbin/nologin
+    lock_passwd: true
+
+# --- packages ---
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+  - apt-listchanges
+  - jq
+  - rsync
+  - tzdata
+  - logrotate
+
+# --- write files ---
+write_files:
+  # SSH hardening
+  - path: /etc/ssh/sshd_config.d/10-hardening.conf
+    permissions: "0644"
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+      X11Forwarding no
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      MaxAuthTries 3
+      LoginGraceTime 30
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+
+  # fail2ban — sshd jail
+  - path: /etc/fail2ban/jail.d/sshd.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      port = ssh
+      logpath = %(sshd_log)s
+      backend = systemd
+      maxretry = 5
+      findtime = 10m
+      bantime = 1h
+
+  # Security-only unattended upgrades
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+  - path: /etc/apt/apt.conf.d/50unattended-upgrades
+    permissions: "0644"
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+          "$${distro_id}:$${distro_codename}-security";
+          "$${distro_id}ESMApps:$${distro_codename}-apps-security";
+          "$${distro_id}ESM:$${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+      Unattended-Upgrade::MinimalSteps "true";
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::Automatic-Reboot "false";
+
+  # Docker daemon configuration — log rotation + live restore
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "5"
+        },
+        "live-restore": true,
+        "no-new-privileges": true,
+        "userland-proxy": false
+      }
+
+  # Marker file the operator deploy script polls for, so it knows cloud-init
+  # finished its work and Docker is actually ready.
+  - path: /etc/agent-base/instance.json
+    permissions: "0644"
+    content: |
+      {
+        "slug": "${slug}",
+        "fqdn": "${fqdn}",
+        "cloud_init_version": "v1"
+      }
+
+# --- run commands ---
+# Ordering matters: ufw must be configured before SSH lockdown takes effect,
+# Docker keyring must be installed before docker-ce can be apt-installed.
+runcmd:
+  # --- ufw: default deny, allow 22/80/443 ---
+  - [bash, -c, "ufw --force reset"]
+  - [bash, -c, "ufw default deny incoming"]
+  - [bash, -c, "ufw default allow outgoing"]
+  - [bash, -c, "ufw allow 22/tcp comment 'SSH'"]
+  - [bash, -c, "ufw allow 80/tcp comment 'HTTP — ACME + redirect'"]
+  - [bash, -c, "ufw allow 443/tcp comment 'HTTPS'"]
+  - [bash, -c, "ufw --force enable"]
+
+  # --- fail2ban + ssh hardening apply ---
+  - [systemctl, enable, --now, fail2ban]
+  - [systemctl, restart, ssh]
+
+  # --- docker engine (official apt repo, pinned channel) ---
+  - [bash, -c, "install -m 0755 -d /etc/apt/keyrings"]
+  - [bash, -c, "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg"]
+  - [bash, -c, "chmod a+r /etc/apt/keyrings/docker.gpg"]
+  - [bash, -c, "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $${VERSION_CODENAME}) stable\" > /etc/apt/sources.list.d/docker.list"]
+  - [apt-get, update]
+  - [apt-get, install, -y, docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
+  - [systemctl, enable, --now, docker]
+
+  # --- runtime dirs ---
+  - [install, -d, -o, deploy, -g, deploy, -m, "0750", /opt/hermes-client]
+  - [install, -d, -o, deploy, -g, deploy, -m, "0750", /opt/hermes-client/compose]
+  - [install, -d, -o, deploy, -g, deploy, -m, "0700", /opt/hermes-client/secrets]
+  - [install, -d, -o, root, -g, root, -m, "0755", /var/log/hermes]
+  - [install, -d, -o, hermes, -g, hermes, -m, "0750", /var/log/hermes/audit]
+
+  # --- mark cloud-init complete in the marker file ---
+  - [bash, -c, "jq '. + {ready_at: (now | todate)}' /etc/agent-base/instance.json > /etc/agent-base/instance.json.tmp && mv /etc/agent-base/instance.json.tmp /etc/agent-base/instance.json"]
+
+# --- final reboot only if something requires it ---
+power_state:
+  mode: reboot
+  condition: "test -f /var/run/reboot-required"
+  delay: "+1"
+  message: "Reboot to apply kernel/security updates from cloud-init."

@@ -1,0 +1,144 @@
+# Production compose stack. One file, environment-driven.
+#
+# In M1 the `app` service is `traefik/whoami` — a 6 MB image that echoes the
+# request. It validates the full path (DNS -> firewall -> Caddy -> reverse
+# proxy -> service -> HTTPS cert) without depending on a working Hermes
+# image. M2 swaps the image to the custom Hermes build.
+#
+# Required env (compose/.env on the VPS):
+#   FQDN              fully qualified domain (e.g. acme.example.com)
+#   APP_IMAGE         image tag for the app service
+#   ACME_EMAIL        contact email for Let's Encrypt
+#
+# Local dev uses docker-compose.local.yml as an override which adds a
+# self-signed cert and binds high-numbered ports.
+
+name: hermes-${COMPOSE_SLUG:-default}
+
+networks:
+  edge:
+    name: hermes-edge
+    driver: bridge
+  internal:
+    name: hermes-internal
+    driver: bridge
+    internal: false   # set to true once outbound egress allowlist is in place
+
+volumes:
+  caddy_data:
+    name: hermes_caddy_data
+  caddy_config:
+    name: hermes_caddy_config
+  hermes_state:
+    name: hermes_state
+  hermes_memory:
+    name: hermes_memory
+  hermes_workspace:
+    name: hermes_workspace
+  audit_logs:
+    name: hermes_audit_logs
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: hermes-caddy
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      FQDN: ${FQDN:?FQDN must be set}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL must be set}
+      APP_UPSTREAM: ${APP_UPSTREAM:-app:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    depends_on:
+      app:
+        condition: service_started
+
+  # --- M1 placeholder: whoami. M2 will replace this with hermes. ---
+  app:
+    image: ${APP_IMAGE:-traefik/whoami:v1.10}
+    container_name: hermes-app
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16M,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    expose:
+      - "80"
+    # No healthcheck in M1 — traefik/whoami is scratch-based with no shell,
+    # wget, or curl. Caddy's reverse_proxy `unhealthy_status` surfaces upstream
+    # failures. M2 will add a real /healthz check on the Hermes image.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # --- M2+ scheduler service. Stubbed and disabled in M1 via profiles. ---
+  scheduler:
+    image: ${SCHEDULER_IMAGE:-mcuadros/ofelia:v0.3.13}
+    container_name: hermes-scheduler
+    restart: unless-stopped
+    command: daemon --config=/etc/ofelia/config.ini
+    volumes:
+      - ./ofelia.ini:/etc/ofelia/config.ini:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - internal
+    profiles:
+      - m2   # not started in M1; enable with `--profile m2`
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # --- M4 backup sidecar. Stubbed and disabled in M1. ---
+  backup:
+    image: offen/docker-volume-backup:v2.43.0
+    container_name: hermes-backup
+    restart: unless-stopped
+    env_file:
+      - ./backup.env
+    volumes:
+      - hermes_state:/backup/hermes_state:ro
+      - hermes_memory:/backup/hermes_memory:ro
+      - hermes_workspace:/backup/hermes_workspace:ro
+      - audit_logs:/backup/audit_logs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    profiles:
+      - m4
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

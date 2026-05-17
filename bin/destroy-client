@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Tear down a client instance. Runs `terraform destroy` against the
+# specified slug+domain, removes the inventory row, and prints a final
+# checklist of manual offboarding steps (data export, support access
+# revocation, billing).
+#
+# Usage: bin/destroy-client <slug> --domain DOMAIN [--yes]
+
+set -euo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+usage() { echo "Usage: $0 <slug> --domain DOMAIN [--yes]" >&2; exit 2; }
+
+[[ $# -ge 1 ]] || usage
+SLUG="$1"; shift
+DOMAIN=""; YES=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --domain) DOMAIN="$2"; shift 2 ;;
+    --yes)    YES=1; shift ;;
+    -h|--help) usage ;;
+    *) fatal "unknown arg: $1" ;;
+  esac
+done
+
+validate_slug "$SLUG"
+[[ -n "$DOMAIN" ]] || fatal "--domain is required"
+validate_domain "$DOMAIN"
+require_env HCLOUD_TOKEN CLOUDFLARE_API_TOKEN
+require_cmd terraform
+
+warn "this will DESTROY the VPS and DNS record for $SLUG.$DOMAIN"
+warn "named volumes on the VPS will be lost. confirm backups exist first."
+if [[ "$YES" -ne 1 ]]; then
+  read -rp "type the slug ($SLUG) to confirm: " confirm
+  [[ "$confirm" == "$SLUG" ]] || fatal "confirmation mismatch — aborting"
+fi
+
+INFRA_DIR="$REPO_ROOT/infra"
+terraform -chdir="$INFRA_DIR" destroy -input=false -auto-approve \
+  -var "slug=$SLUG" -var "domain=$DOMAIN"
+
+# Mark inventory row as destroyed instead of deleting it, so the historical
+# record survives.
+INV_FILE="$REPO_ROOT/docs/client-inventory.md"
+if [[ -f "$INV_FILE" ]]; then
+  tmp="$(mktemp)"
+  awk -v slug="$SLUG" '
+    BEGIN { FS=OFS="|" }
+    $0 ~ "^\\| *"slug" *\\|" { sub(/active *\|/, "destroyed |"); print; next }
+    { print }
+  ' "$INV_FILE" > "$tmp"
+  mv "$tmp" "$INV_FILE"
+  ok "inventory: $SLUG marked destroyed"
+fi
+
+ok "destroy complete"
+cat >&2 <<EOF
+
+Offboarding checklist (manual):
+  [ ] Export client data from any backup location
+  [ ] Revoke support SSH keys if scoped to this client
+  [ ] Cancel client subscription / billing
+  [ ] Notify client + confirm in delivery log
+EOF

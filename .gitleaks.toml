@@ -1,0 +1,40 @@
+title = "self-contained-agent-base — gitleaks config"
+
+# Inherit gitleaks defaults plus our additions.
+[extend]
+useDefault = true
+
+# Project-specific rules.
+[[rules]]
+id = "hcloud-token"
+description = "Hetzner Cloud API token (64-char hex)"
+regex = '''(?i)(hcloud[_-]?token|HCLOUD_TOKEN)['"\s:=]+([a-zA-Z0-9]{64})'''
+tags = ["secret", "hetzner"]
+
+[[rules]]
+id = "cloudflare-api-token"
+description = "Cloudflare API token"
+regex = '''(?i)(cloudflare[_-]?api[_-]?token|CLOUDFLARE_API_TOKEN)['"\s:=]+([a-zA-Z0-9_-]{40,})'''
+tags = ["secret", "cloudflare"]
+
+[[rules]]
+id = "op-injected-secret"
+description = "1Password CLI placeholder accidentally resolved before commit"
+regex = '''op:\/\/[A-Za-z0-9_\-\/\.]+'''
+tags = ["secret", "1password"]
+
+# Allowlist legitimate placeholders.
+[allowlist]
+description = "Skip example/template files and known placeholders"
+paths = [
+  '''\.example$''',
+  '''\.tmpl$''',
+  '''docs/.*\.md$''',
+  '''README\.md$''',
+  '''PRD.*\.md$''',
+]
+regexes = [
+  '''<your-.*>''',
+  '''CHANGEME''',
+  '''xxxx+''',
+]

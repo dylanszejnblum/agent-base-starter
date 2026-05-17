@@ -1,0 +1,48 @@
+# --- secrets and local state ---
+*.env
+!*.env.example
+!*.env.tmpl
+.envrc
+secrets/
+*.pem
+*.key
+!**/Caddyfile*.tmpl
+
+# --- Terraform ---
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.*
+infra/terraform.tfvars
+!infra/terraform.tfvars.example
+infra/backend.tf
+!infra/backend.tf.example
+infra/crash.log
+infra/crash.*.log
+infra/.terraformrc
+infra/terraform.rc
+
+# --- compose / runtime ---
+compose/.env
+compose/Caddyfile
+compose/data/
+
+# --- operating system ---
+.DS_Store
+Thumbs.db
+
+# --- editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- build artifacts ---
+dist/
+build/
+*.tar.gz
+*.tgz
+
+# --- inventory append working files ---
+docs/client-inventory.local.md
