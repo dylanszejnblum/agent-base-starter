@@ -4,6 +4,7 @@
 !*.env.tmpl
 .envrc
 secrets/
+.deploy-credentials/
 *.pem
 *.key
 !**/Caddyfile*.tmpl

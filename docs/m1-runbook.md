@@ -1,4 +1,9 @@
-# M1 deploy runbook
+# M1 deploy runbook (historical)
+
+> **Superseded by `docs/m2-runbook.md`.** The compose stack no longer ships a
+> whoami placeholder. This document is kept for reference (the
+> infrastructure layer didn't change in M2 — DNS/firewall/cloud-init/Caddy
+> issuance debugging tips still apply).
 
 End-to-end walkthrough for deploying the M1 placeholder stack (Caddy + whoami) to a fresh Hetzner VPS with a Cloudflare-managed domain.
 

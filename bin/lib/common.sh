@@ -103,4 +103,26 @@ if [[ -z "${COMMON_SH_LOADED:-}" ]]; then
       -o LogLevel=ERROR \
       "$@"
   }
+
+  # --- password helpers ---
+  # Generate a URL-safe random password. Default length 32 chars.
+  gen_password() {
+    local len="${1:-32}"
+    # Prefer openssl (universally available); fall back to /dev/urandom.
+    if command -v openssl >/dev/null 2>&1; then
+      openssl rand -base64 48 | tr -dc 'A-Za-z0-9_-' | head -c "$len"
+    else
+      LC_ALL=C tr -dc 'A-Za-z0-9_-' </dev/urandom | head -c "$len"
+    fi
+    echo
+  }
+
+  # Bcrypt-hash a password using a one-shot caddy container. Output is the
+  # raw $2a$ hash, ready to drop into Caddyfile or .env. Uses caddy:2-alpine
+  # so the hash format always matches what the running caddy will accept.
+  hash_password_caddy() {
+    local plain="$1"
+    require_cmd docker
+    docker run --rm caddy:2-alpine caddy hash-password --plaintext "$plain" 2>/dev/null
+  }
 fi

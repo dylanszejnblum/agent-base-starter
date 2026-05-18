@@ -1,17 +1,22 @@
-# Production compose stack. One file, environment-driven.
+# Production compose stack for a single Hermes client instance.
 #
-# In M1 the `app` service is `traefik/whoami` — a 6 MB image that echoes the
-# request. It validates the full path (DNS -> firewall -> Caddy -> reverse
-# proxy -> service -> HTTPS cert) without depending on a working Hermes
-# image. M2 swaps the image to the custom Hermes build.
+# Layout adapted from the official Nous compose (docker-compose.yml in
+# NousResearch/hermes-agent), but with two changes for our use case:
+#   - bridge network (not host) so Caddy can route by service name
+#   - Caddy in front of the dashboard with basic_auth (the dashboard
+#     exposes provider API keys; Nous's own warning is explicit)
 #
 # Required env (compose/.env on the VPS):
-#   FQDN              fully qualified domain (e.g. acme.example.com)
-#   APP_IMAGE         image tag for the app service
-#   ACME_EMAIL        contact email for Let's Encrypt
+#   FQDN                          fully qualified domain (e.g. acme.example.com)
+#   ACME_EMAIL                    contact email for Let's Encrypt
+#   HERMES_IMAGE                  pinned hermes image (default below)
+#   HERMES_DASHBOARD_USERNAME     operator/client login (basic_auth)
+#   HERMES_DASHBOARD_PASSWORD_HASH bcrypt hash from `caddy hash-password`
+#   OPENAI_API_KEY (or equivalent provider key)
 #
-# Local dev uses docker-compose.local.yml as an override which adds a
-# self-signed cert and binds high-numbered ports.
+# Optional:
+#   HERMES_UID, HERMES_GID        match host volume ownership (default 10000)
+#   HERMES_PROFILE                profile name to create on first boot (default: slug)
 
 name: hermes-${COMPOSE_SLUG:-default}
 
@@ -22,21 +27,17 @@ networks:
   internal:
     name: hermes-internal
     driver: bridge
-    internal: false   # set to true once outbound egress allowlist is in place
 
 volumes:
   caddy_data:
     name: hermes_caddy_data
   caddy_config:
     name: hermes_caddy_config
-  hermes_state:
-    name: hermes_state
-  hermes_memory:
-    name: hermes_memory
-  hermes_workspace:
-    name: hermes_workspace
-  audit_logs:
-    name: hermes_audit_logs
+  # Single volume captures all Hermes state per the upstream design:
+  # config.yaml, .env, profiles/, sessions/, logs/, cron/, memories/,
+  # skills/, workspace/, auth.json. Backup this one path = backup everything.
+  hermes_home:
+    name: hermes_home
 
 services:
   caddy:
@@ -55,7 +56,8 @@ services:
     environment:
       FQDN: ${FQDN:?FQDN must be set}
       ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL must be set}
-      APP_UPSTREAM: ${APP_UPSTREAM:-app:80}
+      DASHBOARD_USERNAME: ${HERMES_DASHBOARD_USERNAME:?HERMES_DASHBOARD_USERNAME must be set}
+      DASHBOARD_PASSWORD_HASH: ${HERMES_DASHBOARD_PASSWORD_HASH:?HERMES_DASHBOARD_PASSWORD_HASH must be set}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -75,68 +77,83 @@ services:
         max-size: "10m"
         max-file: "5"
     depends_on:
-      app:
+      hermes-dashboard:
         condition: service_started
 
-  # --- M1 placeholder: whoami. M2 will replace this with hermes. ---
-  app:
-    image: ${APP_IMAGE:-traefik/whoami:v1.10}
-    container_name: hermes-app
+  # --- hermes gateway: messaging integrations + background runtime ---
+  # `gateway run` is the official foreground entrypoint for container use
+  # (per `hermes gateway --help`: "recommended for WSL, Docker, Termux").
+  # In M2 the gateway is started so the agent reacts to scheduled jobs and
+  # any configured messaging platform; messaging credentials are opt-in.
+  hermes-gateway:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:main}
+    container_name: hermes-gateway
     restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp:size=16M,mode=1777
-    cap_drop:
-      - ALL
+    command: ["gateway", "run"]
+    environment:
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+      HERMES_HOME: /opt/data
+      # The entrypoint sources /opt/data/.env at runtime; we also pass these
+      # through compose so they're visible to `docker compose exec` debugging.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - hermes_home:/opt/data
+    networks:
+      - internal
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # --- hermes dashboard: web UI on :9119 ---
+  # Bound to 0.0.0.0 so Caddy on the same docker network can reach it.
+  # `--insecure` only disables the dashboard's own anti-LAN guard; Caddy
+  # enforces basic_auth in front, so the surface is not actually exposed.
+  # `--skip-build` avoids needing npm at runtime; UI assets are baked into
+  # the image at build time (web/dist).
+  hermes-dashboard:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:main}
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    command:
+      - "dashboard"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "9119"
+      - "--insecure"
+      - "--no-open"
+      - "--skip-build"
+    environment:
+      HERMES_UID: ${HERMES_UID:-10000}
+      HERMES_GID: ${HERMES_GID:-10000}
+      HERMES_HOME: /opt/data
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - hermes_home:/opt/data
     networks:
       - internal
     expose:
-      - "80"
-    # No healthcheck in M1 — traefik/whoami is scratch-based with no shell,
-    # wget, or curl. Caddy's reverse_proxy `unhealthy_status` surfaces upstream
-    # failures. M2 will add a real /healthz check on the Hermes image.
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
-  # --- M2+ scheduler service. Stubbed and disabled in M1 via profiles. ---
-  scheduler:
-    image: ${SCHEDULER_IMAGE:-mcuadros/ofelia:v0.3.13}
-    container_name: hermes-scheduler
-    restart: unless-stopped
-    command: daemon --config=/etc/ofelia/config.ini
-    volumes:
-      - ./ofelia.ini:/etc/ofelia/config.ini:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - internal
-    profiles:
-      - m2   # not started in M1; enable with `--profile m2`
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-
-  # --- M4 backup sidecar. Stubbed and disabled in M1. ---
-  backup:
-    image: offen/docker-volume-backup:v2.43.0
-    container_name: hermes-backup
-    restart: unless-stopped
-    env_file:
-      - ./backup.env
-    volumes:
-      - hermes_state:/backup/hermes_state:ro
-      - hermes_memory:/backup/hermes_memory:ro
-      - hermes_workspace:/backup/hermes_workspace:ro
-      - audit_logs:/backup/audit_logs:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    profiles:
-      - m4
+      - "9119"
+    depends_on:
+      hermes-gateway:
+        condition: service_started
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Dashboard answers HEAD / once initialised (~10-30s on first boot
+      # because the .venv lazy-imports providers).
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:9119/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     logging:
       driver: json-file
       options:
