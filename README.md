@@ -4,13 +4,13 @@ Single-command, production-grade installer for a containerized Hermes Agent clie
 
 One operator command provisions infrastructure (Hetzner VPS + Cloudflare DNS + firewall), prepares the host (Docker, hardening), brings up a Dockerized Hermes + Caddy stack with automatic Let's Encrypt HTTPS, and runs smoke tests against `https://<slug>.<domain>`.
 
-## Status — M1 skeleton
+## Status — M2 (Hermes services)
 
 | Milestone | State | What works |
 |---|---|---|
-| M1 — Skeleton | **in progress** | Terraform (Hetzner + Cloudflare), cloud-init, compose with Caddy + `whoami` placeholder, smoke tests |
-| M2 — Hermes image | not started | Custom `images/hermes/` Dockerfile, swap whoami → hermes |
-| M3 — Single command | not started | `bin/deploy-client` fully wired end-to-end |
+| M1 — Skeleton | done | Terraform (Hetzner + Cloudflare), cloud-init, compose with Caddy, smoke tests |
+| M2 — Hermes services | **in progress** | Official `nousresearch/hermes-agent` image, gateway + dashboard, Caddy basic_auth, password generation, Hermes-aware smoke tests |
+| M3 — Single command + secrets | not started | Switch from inline env to 1Password `op inject`; idempotent re-run |
 | M4 — Backups + runbooks | not started | `scripts/backup-client.sh`, off-VPS sync, restore tested |
 | M5 — Production-ready | not started | fail2ban tuning, gitleaks/trivy in CI, first paying-client deploy |
 
@@ -45,7 +45,7 @@ Ticket: `../agent-consultancy/Tickets/AGCON-013 — Dockerized Hermes Client Ins
 │   ├── Caddyfile.tmpl
 │   └── .env.example
 ├── images/
-│   └── hermes/             # M2: custom Hermes image
+│   └── hermes/             # custom Hermes image (only if/when baking pyme-admin-core)
 ├── scripts/                # reusable building blocks
 │   ├── wait-for-ssh.sh
 │   ├── wait-for-dns.sh
@@ -87,27 +87,34 @@ On the operator machine:
 - A Cloudflare API token scoped to the zone (Zone:Read, DNS:Edit)
 - 1Password CLI `op` for secret injection (required in M3; optional in M1)
 
-## M1 quickstart
+## Quickstart
 
-See [`docs/m1-runbook.md`](docs/m1-runbook.md) for the full walkthrough. Short version:
+See [`docs/m2-runbook.md`](docs/m2-runbook.md) for the full walkthrough.
+The M1 runbook for the pre-Hermes (whoami) skeleton remains at
+[`docs/m1-runbook.md`](docs/m1-runbook.md) for reference.
 
 ```bash
 # 1. Configure
 cp infra/terraform.tfvars.example infra/terraform.tfvars
-$EDITOR infra/terraform.tfvars   # set slug, domain, region, ssh_public_key
+$EDITOR infra/terraform.tfvars   # set slug, domain, ssh_public_keys, zone_id
 
 # 2. Export tokens (never commit these)
 export HCLOUD_TOKEN=...
 export CLOUDFLARE_API_TOKEN=...
+export OPENAI_API_KEY=...        # or ANTHROPIC_API_KEY — at least one
 
 # 3. Provision
 ./bin/deploy-client <slug> --domain <your-domain>
 
 # 4. Verify
-curl -sI https://<slug>.<your-domain>/health
+curl -sI https://<slug>.<your-domain>/health   # 200, public
+curl -sI https://<slug>.<your-domain>/         # 401, requires basic_auth
 ```
 
-End state: `https://<slug>.<domain>` returns the `whoami` placeholder over a valid Let's Encrypt cert.
+End state: dashboard reachable at `https://<slug>.<domain>` over Let's Encrypt
+HTTPS, protected by per-deploy basic_auth. Username + generated password are
+printed once at the end of the deploy and also written (mode 600) to
+`.deploy-credentials/<slug>.txt`. Move to 1Password and delete the file.
 
 ## Security baseline
 

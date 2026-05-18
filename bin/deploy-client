@@ -3,12 +3,13 @@
 #   1. terraform apply (Hetzner VPS + Cloudflare DNS + firewall)
 #   2. wait for SSH + cloud-init to finish
 #   3. wait for DNS to propagate
-#   4. render Caddyfile + .env from templates
-#   5. rsync compose/ to /opt/hermes-client/compose/
-#   6. docker compose up -d on the VPS
-#   7. wait for HTTPS to come up with a real LE cert
-#   8. smoke-test.sh
-#   9. append-inventory.sh
+#   4. generate dashboard password + bcrypt hash
+#   5. render Caddyfile + .env from templates
+#   6. rsync compose/ to /opt/hermes-client/compose/
+#   7. docker compose pull + up -d on the VPS
+#   8. wait for HTTPS to come up with a real LE cert
+#   9. smoke-test.sh
+#   10. append-inventory.sh + print credentials
 #
 # Idempotent: rerunning against an existing slug is a no-op for unchanged
 # inputs (terraform converges, rsync only ships diffs, compose up -d is a
@@ -50,13 +51,16 @@ Required:
 Flags:
   --location LOC          Hetzner location (default: nbg1)
   --size TYPE             Hetzner server type (default: cx22)
-  --image-tag TAG         App image tag for inventory (default: m1-whoami)
+  --image-tag TAG         Inventory tag (default: m2-initial)
+  --hermes-image REF      Hermes image (default: nousresearch/hermes-agent:main)
+  --dashboard-username U  Basic-auth username for dashboard (default: ops)
   --acme-email EMAIL      Let's Encrypt contact (default: ops+<slug>@<domain>)
   --cloudflare-zone-id ID Cloudflare Zone ID (required unless in tfvars)
   --skip-smoke            Skip smoke tests
   --plan-only             terraform plan, then exit
 
-Env required: HCLOUD_TOKEN, CLOUDFLARE_API_TOKEN
+Env required:  HCLOUD_TOKEN, CLOUDFLARE_API_TOKEN
+Env optional:  OPENAI_API_KEY, ANTHROPIC_API_KEY (at least one strongly recommended)
 EOF
   exit 2
 }
@@ -68,9 +72,13 @@ SLUG="$1"; shift
 DOMAIN=""
 LOCATION="nbg1"
 SIZE="cx22"
-IMAGE_TAG="m1-whoami"
+IMAGE_TAG="m2-initial"
+HERMES_IMAGE="nousresearch/hermes-agent:main"
+DASHBOARD_USERNAME="ops"
 ACME_EMAIL=""
 CF_ZONE_ID=""
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 SKIP_SMOKE=0
 PLAN_ONLY=0
 
@@ -80,6 +88,8 @@ while [[ $# -gt 0 ]]; do
     --location)            LOCATION="$2"; shift 2 ;;
     --size)                SIZE="$2"; shift 2 ;;
     --image-tag)           IMAGE_TAG="$2"; shift 2 ;;
+    --hermes-image)        HERMES_IMAGE="$2"; shift 2 ;;
+    --dashboard-username)  DASHBOARD_USERNAME="$2"; shift 2 ;;
     --acme-email)          ACME_EMAIL="$2"; shift 2 ;;
     --cloudflare-zone-id)  CF_ZONE_ID="$2"; shift 2 ;;
     --skip-smoke)          SKIP_SMOKE=1; shift ;;
@@ -147,7 +157,31 @@ ok "vps ready: $SSH_HOST ($IPV4)"
 # --- 3. wait for DNS propagation ---
 "$REPO_ROOT/scripts/wait-for-dns.sh" "$FQDN" "$IPV4"
 
-# --- 4. render templates ---
+# --- 4. dashboard credentials ---
+# Generate a fresh random password every deploy. Bcrypt-hash it via a
+# disposable caddy container so the hash format matches what runs in prod.
+# The plaintext is written to a 0600 file locally and echoed once at the
+# end of the deploy — it is the operator's responsibility to capture it.
+info "generating dashboard password"
+DASHBOARD_PASSWORD="$(gen_password 24)"
+DASHBOARD_PASSWORD_HASH="$(hash_password_caddy "$DASHBOARD_PASSWORD")"
+[[ -n "$DASHBOARD_PASSWORD_HASH" ]] || fatal "caddy hash-password produced empty hash (is docker running?)"
+
+CRED_FILE="$REPO_ROOT/.deploy-credentials/${SLUG}.txt"
+mkdir -p "$(dirname "$CRED_FILE")"
+chmod 700 "$(dirname "$CRED_FILE")"
+umask 077
+cat > "$CRED_FILE" <<EOF
+# Dashboard credentials for $FQDN
+# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Move to 1Password and delete this file.
+URL=https://$FQDN/
+USERNAME=$DASHBOARD_USERNAME
+PASSWORD=$DASHBOARD_PASSWORD
+EOF
+umask 022
+
+# --- 5. render templates ---
 RENDER_DIR="$(mktemp -d)"
 trap 'rm -rf "$RENDER_DIR"' EXIT
 
@@ -155,15 +189,20 @@ info "rendering Caddyfile + .env"
 sed \
   -e "s|{{FQDN}}|$FQDN|g" \
   -e "s|{{ACME_EMAIL}}|$ACME_EMAIL|g" \
-  -e "s|{{APP_UPSTREAM}}|app:80|g" \
   "$REPO_ROOT/compose/Caddyfile.tmpl" > "$RENDER_DIR/Caddyfile"
 
 cat > "$RENDER_DIR/.env" <<EOF
 COMPOSE_SLUG=$SLUG
 FQDN=$FQDN
 ACME_EMAIL=$ACME_EMAIL
-APP_IMAGE=traefik/whoami:v1.10
-APP_UPSTREAM=app:80
+HERMES_IMAGE=$HERMES_IMAGE
+HERMES_UID=10000
+HERMES_GID=10000
+HERMES_PROFILE=$SLUG
+HERMES_DASHBOARD_USERNAME=$DASHBOARD_USERNAME
+HERMES_DASHBOARD_PASSWORD_HASH=$DASHBOARD_PASSWORD_HASH
+OPENAI_API_KEY=$OPENAI_API_KEY
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 EOF
 
 # --- 5. rsync compose/ + rendered files ---
@@ -200,6 +239,12 @@ fi
 "$REPO_ROOT/scripts/append-inventory.sh" "$SLUG" "$FQDN" "$IPV4" "$IMAGE_TAG"
 
 ok "deploy complete"
-info "URL:  https://$FQDN/"
-info "SSH:  ssh $SSH_HOST"
+info "URL:      https://$FQDN/"
+info "SSH:      ssh $SSH_HOST"
+info "username: $DASHBOARD_USERNAME"
+info "password: $DASHBOARD_PASSWORD"
+info ""
+warn "credentials also saved to: $CRED_FILE"
+warn "move to 1Password and delete the file. it is gitignored but lives on your disk in plaintext until you remove it."
+info ""
 info "next: review docs/client-inventory.md and commit (no secrets!)"

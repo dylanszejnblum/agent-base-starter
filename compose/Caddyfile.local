@@ -16,5 +16,9 @@ localhost, 127.0.0.1 {
 		close
 	}
 
-	reverse_proxy app:80
+	basic_auth {
+		{$DASHBOARD_USERNAME} {$DASHBOARD_PASSWORD_HASH}
+	}
+
+	reverse_proxy hermes-dashboard:9119
 }

@@ -2,9 +2,9 @@
 #   docker compose -f docker-compose.yml -f docker-compose.local.yml up
 #
 # Changes vs prod:
-#   - Caddy binds to 8080/8443 to avoid host port conflicts.
-#   - FQDN defaults to localhost; Caddy serves self-signed.
-#   - No ACME — Caddy's `internal` issuer signs locally.
+#   - Caddy binds to 8080/8443 to avoid host port conflicts
+#   - FQDN defaults to localhost; Caddy uses its internal CA (self-signed)
+#   - basic_auth is still required (use `caddy hash-password` to generate)
 
 services:
   caddy:
@@ -14,6 +14,8 @@ services:
     environment:
       FQDN: ${FQDN:-localhost}
       ACME_EMAIL: ${ACME_EMAIL:-local@example.invalid}
+      DASHBOARD_USERNAME: ${HERMES_DASHBOARD_USERNAME:-dev}
+      DASHBOARD_PASSWORD_HASH: ${HERMES_DASHBOARD_PASSWORD_HASH:?run scripts/gen-dashboard-password.sh to bootstrap}
       CADDY_LOCAL: "true"
     volumes:
       - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
