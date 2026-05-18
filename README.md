@@ -4,13 +4,13 @@ Single-command, production-grade installer for a containerized Hermes Agent clie
 
 One operator command provisions infrastructure (Hetzner VPS + Cloudflare DNS + firewall), prepares the host (Docker, hardening), brings up a Dockerized Hermes + Caddy stack with automatic Let's Encrypt HTTPS, and runs smoke tests against `https://<slug>.<domain>`.
 
-## Status — M2 (Hermes services)
+## Status — M3 (age secrets + pinned image)
 
 | Milestone | State | What works |
 |---|---|---|
 | M1 — Skeleton | done | Terraform (Hetzner + Cloudflare), cloud-init, compose with Caddy, smoke tests |
-| M2 — Hermes services | **in progress** | Official `nousresearch/hermes-agent` image, gateway + dashboard, Caddy basic_auth, password generation, Hermes-aware smoke tests |
-| M3 — Single command + secrets | not started | Switch from inline env to 1Password `op inject`; idempotent re-run |
+| M2 — Hermes services | done | Official `nousresearch/hermes-agent` image, gateway + dashboard, Caddy basic_auth |
+| M3 — age secrets + image pin | **in progress** | `secrets/<slug>.env.age` (encrypted in repo), pinned Hermes SHA, stable dashboard password across deploys |
 | M4 — Backups + runbooks | not started | `scripts/backup-client.sh`, off-VPS sync, restore tested |
 | M5 — Production-ready | not started | fail2ban tuning, gitleaks/trivy in CI, first paying-client deploy |
 
@@ -55,9 +55,12 @@ Ticket: `../agent-consultancy/Tickets/AGCON-013 — Dockerized Hermes Client Ins
 │   ├── backup-client.sh    # M4 stub
 │   └── restore-client.sh   # M4 stub
 ├── skills/
-│   └── pyme-admin-core/    # M2: vendored/submoduled skill bundle
-├── templates/
-│   └── client.env.tmpl     # 1Password placeholders
+│   └── pyme-admin-core/    # M2+: vendored/submoduled skill bundle
+├── secrets/                # age-encrypted per-client envs (tracked, encrypted)
+│   ├── README.md
+│   ├── .recipients         # operator age public keys
+│   ├── .env.example        # plaintext schema reference
+│   └── <slug>.env.age      # per-client (created at first deploy)
 ├── docs/
 │   ├── m1-runbook.md       # manual + script-assisted M1 deploy walkthrough
 │   ├── secrets.md
@@ -85,36 +88,49 @@ On the operator machine:
 - A Hetzner Cloud project + API token
 - A domain delegated to Cloudflare (or willingness to set this up before M1 completes)
 - A Cloudflare API token scoped to the zone (Zone:Read, DNS:Edit)
-- 1Password CLI `op` for secret injection (required in M3; optional in M1)
+- `age` for per-client secret encryption (`brew install age` / `apt install age`). One-time key generation per operator — see `secrets/README.md`.
 
 ## Quickstart
 
-See [`docs/m2-runbook.md`](docs/m2-runbook.md) for the full walkthrough.
-The M1 runbook for the pre-Hermes (whoami) skeleton remains at
-[`docs/m1-runbook.md`](docs/m1-runbook.md) for reference.
+See [`docs/m3-runbook.md`](docs/m3-runbook.md) for the full walkthrough.
+Older milestone runbooks are kept for reference: [M1](docs/m1-runbook.md), [M2](docs/m2-runbook.md).
 
 ```bash
-# 1. Configure
-cp infra/terraform.tfvars.example infra/terraform.tfvars
-$EDITOR infra/terraform.tfvars   # set slug, domain, ssh_public_keys, zone_id
+# 1. One-time per operator: generate age key and add it to recipients
+brew install age   # macOS; or apt install age
+age-keygen -o ~/.config/age/operator.key && chmod 600 ~/.config/age/operator.key
+age-keygen -y ~/.config/age/operator.key >> secrets/.recipients
+git add secrets/.recipients && git commit -m "ops: add my age key"
 
-# 2. Export tokens (never commit these)
+# 2. Configure infra
+cp infra/terraform.tfvars.example infra/terraform.tfvars
+$EDITOR infra/terraform.tfvars   # slug, domain, ssh_public_keys, zone_id
+
+# 3. Export tokens for this session
 export HCLOUD_TOKEN=...
 export CLOUDFLARE_API_TOKEN=...
-export OPENAI_API_KEY=...        # or ANTHROPIC_API_KEY — at least one
+export OPENAI_API_KEY=...        # seed for first-time init of this slug
 
-# 3. Provision
+# 4. Provision (first run prompts for the LLM key if not in env)
 ./bin/deploy-client <slug> --domain <your-domain>
 
-# 4. Verify
+# 5. Commit the encrypted secrets file
+git add secrets/<slug>.env.age
+git commit -m "ops: init <slug> secrets"
+
+# 6. Verify
 curl -sI https://<slug>.<your-domain>/health   # 200, public
 curl -sI https://<slug>.<your-domain>/         # 401, requires basic_auth
+
+# 7. Read the dashboard password
+age -d -i ~/.config/age/operator.key secrets/<slug>.env.age \
+  | grep HERMES_DASHBOARD_PASSWORD
 ```
 
-End state: dashboard reachable at `https://<slug>.<domain>` over Let's Encrypt
-HTTPS, protected by per-deploy basic_auth. Username + generated password are
-printed once at the end of the deploy and also written (mode 600) to
-`.deploy-credentials/<slug>.txt`. Move to 1Password and delete the file.
+End state: dashboard reachable at `https://<slug>.<domain>` behind basic_auth
+over Let's Encrypt HTTPS. Username + password come from the encrypted
+`secrets/<slug>.env.age`. Plaintext never touches disk on the operator
+machine for longer than a single deploy command.
 
 ## Security baseline
 

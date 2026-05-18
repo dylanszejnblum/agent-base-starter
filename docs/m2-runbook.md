@@ -1,4 +1,8 @@
-# M2 deploy runbook
+# M2 deploy runbook (historical)
+
+> **Superseded by `docs/m3-runbook.md`.** M3 added age-encrypted secrets and
+> pinned the Hermes image SHA. The compose/Caddy/cloud-init layers are
+> unchanged — debugging tips here still apply.
 
 End-to-end walkthrough for deploying the real Hermes Agent stack (gateway + dashboard) on a fresh Hetzner VPS with Caddy basic_auth.
 

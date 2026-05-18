@@ -1,13 +1,19 @@
 # --- secrets and local state ---
 *.env
 !*.env.example
-!*.env.tmpl
 .envrc
-secrets/
 .deploy-credentials/
 *.pem
 *.key
 !**/Caddyfile*.tmpl
+
+# secrets/ is tracked, but only encrypted .age files + .recipients + docs.
+# Plaintext .env files in there are blocked.
+secrets/*
+!secrets/README.md
+!secrets/.env.example
+!secrets/.recipients
+!secrets/*.env.age
 
 # --- Terraform ---
 infra/.terraform/
