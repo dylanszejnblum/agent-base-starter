@@ -86,7 +86,7 @@ services:
   # In M2 the gateway is started so the agent reacts to scheduled jobs and
   # any configured messaging platform; messaging credentials are opt-in.
   hermes-gateway:
-    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:main}
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:sha-d9b6f75c0b0ffa3cdb3cbe63de3a8e1a5aa44e8f}
     container_name: hermes-gateway
     restart: unless-stopped
     command: ["gateway", "run"]
@@ -117,7 +117,7 @@ services:
   # `--skip-build` avoids needing npm at runtime; UI assets are baked into
   # the image at build time (web/dist).
   hermes-dashboard:
-    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:main}
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:sha-d9b6f75c0b0ffa3cdb3cbe63de3a8e1a5aa44e8f}
     container_name: hermes-dashboard
     restart: unless-stopped
     command:

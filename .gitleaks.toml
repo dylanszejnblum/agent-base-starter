@@ -17,24 +17,32 @@ description = "Cloudflare API token"
 regex = '''(?i)(cloudflare[_-]?api[_-]?token|CLOUDFLARE_API_TOKEN)['"\s:=]+([a-zA-Z0-9_-]{40,})'''
 tags = ["secret", "cloudflare"]
 
+# Catch plaintext .env files accidentally placed in secrets/. The .gitignore
+# already blocks these, but this rule fires loudly if one slips through.
 [[rules]]
-id = "op-injected-secret"
-description = "1Password CLI placeholder accidentally resolved before commit"
-regex = '''op:\/\/[A-Za-z0-9_\-\/\.]+'''
-tags = ["secret", "1password"]
+id = "plaintext-env-in-secrets-dir"
+description = "Plaintext .env in secrets/ — should be .env.age (encrypted)"
+path = '''secrets/.*\.env$'''
+regex = '''.''' # match anything; presence of the file is the violation
 
 # Allowlist legitimate placeholders.
 [allowlist]
-description = "Skip example/template files and known placeholders"
+description = "Skip example/template/docs files and known placeholders"
 paths = [
   '''\.example$''',
   '''\.tmpl$''',
   '''docs/.*\.md$''',
+  '''secrets/README\.md$''',
   '''README\.md$''',
   '''PRD.*\.md$''',
+  # Encrypted age files contain high-entropy ciphertext that triggers
+  # generic-secret detection. They are encrypted by design.
+  '''\.env\.age$''',
 ]
 regexes = [
   '''<your-.*>''',
   '''CHANGEME''',
   '''xxxx+''',
+  # Hermes image SHA tag is not a secret
+  '''sha-[a-f0-9]{40}''',
 ]

@@ -125,4 +125,69 @@ if [[ -z "${COMMON_SH_LOADED:-}" ]]; then
     require_cmd docker
     docker run --rm caddy:2-alpine caddy hash-password --plaintext "$plain" 2>/dev/null
   }
+
+  # --- age secret helpers ---
+  # Defaults reflect the operator-side conventions documented in secrets/README.md.
+  age_key_path()        { printf '%s\n' "${AGE_KEY:-$HOME/.config/age/operator.key}"; }
+  age_recipients_path() { printf '%s\n' "$(repo_root)/secrets/.recipients"; }
+  age_secret_path()     { printf '%s\n' "$(repo_root)/secrets/$1.env.age"; }
+
+  # Verify age is installed and the operator has a key. Fatal with install
+  # hints if not. Run this once at the start of any command that touches
+  # secrets, NOT inline per-call.
+  require_age() {
+    require_cmd age
+    local key recipients
+    key="$(age_key_path)"
+    recipients="$(age_recipients_path)"
+
+    if [[ ! -f "$key" ]]; then
+      fatal "age key not found at $key — generate one with: age-keygen -o $key && chmod 600 $key (then add the public key to $recipients)"
+    fi
+    if [[ ! -f "$recipients" ]]; then
+      fatal "recipients file missing: $recipients — see secrets/README.md"
+    fi
+    if ! grep -qE '^age1' "$recipients"; then
+      fatal "no recipients in $recipients — append at least one age public key (age-keygen -y $key)"
+    fi
+  }
+
+  # Decrypt secrets/<slug>.env.age to stdout. Caller is responsible for
+  # capturing into a 0600 temp file and shredding it after use.
+  age_decrypt_secret() {
+    local slug="$1"
+    local file
+    file="$(age_secret_path "$slug")"
+    [[ -f "$file" ]] || fatal "secret file not found: $file"
+    age -d -i "$(age_key_path)" "$file"
+  }
+
+  # Encrypt a plaintext file to secrets/<slug>.env.age, addressed to all
+  # recipients in secrets/.recipients. Overwrites any existing file.
+  age_encrypt_secret() {
+    local slug="$1" plaintext="$2"
+    local out
+    out="$(age_secret_path "$slug")"
+    mkdir -p "$(dirname "$out")"
+    age -R "$(age_recipients_path)" -o "$out" < "$plaintext"
+    chmod 644 "$out"   # the file is encrypted; mode is for git ergonomics, not secrecy
+  }
+
+  # Has a per-slug encrypted secret been initialized?
+  age_secret_exists() {
+    [[ -f "$(age_secret_path "$1")" ]]
+  }
+
+  # Cross-platform "shred-and-remove" for ephemeral plaintext temp files.
+  shred_file() {
+    local f="$1"
+    [[ -f "$f" ]] || return 0
+    if command -v shred >/dev/null 2>&1; then
+      shred -u "$f" 2>/dev/null || rm -f "$f"
+    elif [[ "$(uname -s)" == "Darwin" ]]; then
+      rm -P "$f" 2>/dev/null || rm -f "$f"
+    else
+      rm -f "$f"
+    fi
+  }
 fi

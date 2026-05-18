@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Single-command deploy. Orchestrates:
-#   1. terraform apply (Hetzner VPS + Cloudflare DNS + firewall)
-#   2. wait for SSH + cloud-init to finish
-#   3. wait for DNS to propagate
-#   4. generate dashboard password + bcrypt hash
-#   5. render Caddyfile + .env from templates
-#   6. rsync compose/ to /opt/hermes-client/compose/
-#   7. docker compose pull + up -d on the VPS
-#   8. wait for HTTPS to come up with a real LE cert
-#   9. smoke-test.sh
-#   10. append-inventory.sh + print credentials
+#   1. ensure age + key + recipients exist (operator setup is documented)
+#   2. ensure secrets/<slug>.env.age exists (interactive init if not)
+#   3. terraform apply (Hetzner VPS + Cloudflare DNS + firewall)
+#   4. wait for SSH + cloud-init to finish
+#   5. wait for DNS to propagate
+#   6. decrypt secrets, bcrypt-hash dashboard password
+#   7. render Caddyfile + .env (hash + provider keys)
+#   8. rsync compose/ to /opt/hermes-client/compose/
+#   9. docker compose pull + up -d on the VPS
+#   10. wait for HTTPS to come up with a real LE cert
+#   11. smoke-test.sh
+#   12. append-inventory.sh + print URL/SSH (NO plaintext password)
 #
 # Idempotent: rerunning against an existing slug is a no-op for unchanged
-# inputs (terraform converges, rsync only ships diffs, compose up -d is a
-# no-op when nothing changed).
+# inputs. Secrets stored in secrets/<slug>.env.age are reused; dashboard
+# password is stable across deploys.
 #
 # Usage:
 #   bin/deploy-client <slug> --domain example.com [flags]
@@ -22,14 +24,9 @@
 #   HCLOUD_TOKEN           Hetzner Cloud API token
 #   CLOUDFLARE_API_TOKEN   Cloudflare API token (Zone:Read, DNS:Edit)
 #
-# Flags:
-#   --domain DOMAIN        parent domain (required)
-#   --location LOC         Hetzner location (default: nbg1)
-#   --size TYPE            Hetzner server type (default: cx22)
-#   --image-tag TAG        app image tag for inventory (default: m1-whoami)
-#   --acme-email EMAIL     Let's Encrypt contact (default: ops+<slug>@<domain>)
-#   --skip-smoke           skip smoke tests (debugging only)
-#   --plan-only            terraform plan, then exit
+# Optional env (consumed only during first-time init of secrets/<slug>.env.age):
+#   OPENAI_API_KEY         seed value, prompted if absent
+#   ANTHROPIC_API_KEY      seed value, prompted if absent
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -51,8 +48,8 @@ Required:
 Flags:
   --location LOC          Hetzner location (default: nbg1)
   --size TYPE             Hetzner server type (default: cx22)
-  --image-tag TAG         Inventory tag (default: m2-initial)
-  --hermes-image REF      Hermes image (default: nousresearch/hermes-agent:main)
+  --image-tag TAG         Inventory tag (default: m3-age)
+  --hermes-image REF      Hermes image (default: pinned SHA, see compose/.env.example)
   --dashboard-username U  Basic-auth username for dashboard (default: ops)
   --acme-email EMAIL      Let's Encrypt contact (default: ops+<slug>@<domain>)
   --cloudflare-zone-id ID Cloudflare Zone ID (required unless in tfvars)
@@ -60,7 +57,12 @@ Flags:
   --plan-only             terraform plan, then exit
 
 Env required:  HCLOUD_TOKEN, CLOUDFLARE_API_TOKEN
-Env optional:  OPENAI_API_KEY, ANTHROPIC_API_KEY (at least one strongly recommended)
+Env optional:  OPENAI_API_KEY / ANTHROPIC_API_KEY (only used during first-time
+               secret init for this slug; on subsequent deploys the values come
+               from secrets/<slug>.env.age and these env vars are ignored)
+
+Secrets live in secrets/<slug>.env.age, age-encrypted. See secrets/README.md
+for the one-time operator setup (age-keygen + adding your key to .recipients).
 EOF
   exit 2
 }
@@ -72,13 +74,14 @@ SLUG="$1"; shift
 DOMAIN=""
 LOCATION="nbg1"
 SIZE="cx22"
-IMAGE_TAG="m2-initial"
-HERMES_IMAGE="nousresearch/hermes-agent:main"
+IMAGE_TAG="m3-age"
+HERMES_IMAGE_DEFAULT="nousresearch/hermes-agent:sha-d9b6f75c0b0ffa3cdb3cbe63de3a8e1a5aa44e8f"
+HERMES_IMAGE="$HERMES_IMAGE_DEFAULT"
 DASHBOARD_USERNAME="ops"
 ACME_EMAIL=""
 CF_ZONE_ID=""
-OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+SEED_OPENAI_KEY="${OPENAI_API_KEY:-}"
+SEED_ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 SKIP_SMOKE=0
 PLAN_ONLY=0
 
@@ -111,10 +114,64 @@ ACME_EMAIL="${ACME_EMAIL:-ops+${SLUG}@${DOMAIN}}"
 
 info "slug=$SLUG fqdn=$FQDN location=$LOCATION size=$SIZE image_tag=$IMAGE_TAG"
 
+# --- 0. age preflight + secrets init ---
+require_age
+
+if ! age_secret_exists "$SLUG"; then
+  info "no encrypted secrets for $SLUG — initialising secrets/$SLUG.env.age"
+
+  # Generate a stable dashboard password for this slug — it lives encrypted in
+  # the .env.age and is reused on every deploy. Operator captures it once via
+  # the encrypted file (decrypt + read), not via shell output.
+  init_password="$(gen_password 24)"
+
+  if [[ -z "$SEED_OPENAI_KEY" && -z "$SEED_ANTHROPIC_KEY" ]]; then
+    if [[ -t 0 ]]; then
+      echo "" >&2
+      warn "no LLM provider key in env. Paste one now (it will be encrypted into the .env.age and never logged)."
+      printf '  OPENAI_API_KEY (leave blank to skip): ' >&2
+      read -rs SEED_OPENAI_KEY; echo "" >&2
+      printf '  ANTHROPIC_API_KEY (leave blank to skip): ' >&2
+      read -rs SEED_ANTHROPIC_KEY; echo "" >&2
+    fi
+  fi
+  if [[ -z "$SEED_OPENAI_KEY" && -z "$SEED_ANTHROPIC_KEY" ]]; then
+    fatal "at least one of OPENAI_API_KEY / ANTHROPIC_API_KEY must be provided (via env or interactive prompt)"
+  fi
+
+  init_plain="$(mktemp)"
+  trap 'shred_file "$init_plain"' EXIT
+  cat > "$init_plain" <<EOF
+# Encrypted secrets for $SLUG. Decrypt with:
+#   age -d -i ~/.config/age/operator.key secrets/$SLUG.env.age
+HERMES_DASHBOARD_PASSWORD=$init_password
+OPENAI_API_KEY=$SEED_OPENAI_KEY
+ANTHROPIC_API_KEY=$SEED_ANTHROPIC_KEY
+EOF
+  age_encrypt_secret "$SLUG" "$init_plain"
+  shred_file "$init_plain"
+  trap - EXIT
+
+  ok "wrote $(age_secret_path "$SLUG")"
+  warn "remember to: git add $(age_secret_path "$SLUG") && git commit -m 'ops: init $SLUG secrets'"
+fi
+
+# --- 0b. decrypt secrets to ephemeral file, sourced into the script's env ---
+plain="$(mktemp)"
+trap 'shred_file "$plain"; rm -rf "${RENDER_DIR:-}"' EXIT
+chmod 600 "$plain"
+age_decrypt_secret "$SLUG" > "$plain"
+# shellcheck disable=SC1090
+set -a; source "$plain"; set +a
+
+[[ -n "${HERMES_DASHBOARD_PASSWORD:-}" ]] || fatal "secrets/$SLUG.env.age missing HERMES_DASHBOARD_PASSWORD"
+[[ -n "${OPENAI_API_KEY:-}" || -n "${ANTHROPIC_API_KEY:-}" ]] \
+  || fatal "secrets/$SLUG.env.age missing both OPENAI_API_KEY and ANTHROPIC_API_KEY"
+
 # --- preflight: DNS collision check ---
 existing="$(dig +short @1.1.1.1 "$FQDN" A | tail -n1 || true)"
 if [[ -n "$existing" ]]; then
-  warn "$FQDN already resolves to $existing — assuming this is a re-deploy of the same slug"
+  warn "$FQDN already resolves to $existing — assuming re-deploy of same slug"
 fi
 
 # --- 1. terraform apply ---
@@ -143,7 +200,6 @@ fi
 info "terraform apply"
 terraform -chdir="$INFRA_DIR" apply -input=false -auto-approve "${TF_VAR_ARGS[@]}"
 
-# --- capture outputs ---
 IPV4="$(terraform -chdir="$INFRA_DIR" output -raw ipv4)"
 SSH_HOST="$(terraform -chdir="$INFRA_DIR" output -raw ssh_host)"
 OUT_FQDN="$(terraform -chdir="$INFRA_DIR" output -raw fqdn)"
@@ -157,33 +213,13 @@ ok "vps ready: $SSH_HOST ($IPV4)"
 # --- 3. wait for DNS propagation ---
 "$REPO_ROOT/scripts/wait-for-dns.sh" "$FQDN" "$IPV4"
 
-# --- 4. dashboard credentials ---
-# Generate a fresh random password every deploy. Bcrypt-hash it via a
-# disposable caddy container so the hash format matches what runs in prod.
-# The plaintext is written to a 0600 file locally and echoed once at the
-# end of the deploy — it is the operator's responsibility to capture it.
-info "generating dashboard password"
-DASHBOARD_PASSWORD="$(gen_password 24)"
-DASHBOARD_PASSWORD_HASH="$(hash_password_caddy "$DASHBOARD_PASSWORD")"
-[[ -n "$DASHBOARD_PASSWORD_HASH" ]] || fatal "caddy hash-password produced empty hash (is docker running?)"
-
-CRED_FILE="$REPO_ROOT/.deploy-credentials/${SLUG}.txt"
-mkdir -p "$(dirname "$CRED_FILE")"
-chmod 700 "$(dirname "$CRED_FILE")"
-umask 077
-cat > "$CRED_FILE" <<EOF
-# Dashboard credentials for $FQDN
-# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-# Move to 1Password and delete this file.
-URL=https://$FQDN/
-USERNAME=$DASHBOARD_USERNAME
-PASSWORD=$DASHBOARD_PASSWORD
-EOF
-umask 022
+# --- 4. hash dashboard password ---
+info "bcrypt-hashing dashboard password (via disposable caddy container)"
+DASHBOARD_PASSWORD_HASH="$(hash_password_caddy "$HERMES_DASHBOARD_PASSWORD")"
+[[ -n "$DASHBOARD_PASSWORD_HASH" ]] || fatal "caddy hash-password produced empty hash (is docker running locally?)"
 
 # --- 5. render templates ---
 RENDER_DIR="$(mktemp -d)"
-trap 'rm -rf "$RENDER_DIR"' EXIT
 
 info "rendering Caddyfile + .env"
 sed \
@@ -201,11 +237,12 @@ HERMES_GID=10000
 HERMES_PROFILE=$SLUG
 HERMES_DASHBOARD_USERNAME=$DASHBOARD_USERNAME
 HERMES_DASHBOARD_PASSWORD_HASH=$DASHBOARD_PASSWORD_HASH
-OPENAI_API_KEY=$OPENAI_API_KEY
-ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+OPENAI_API_KEY=${OPENAI_API_KEY:-}
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 EOF
+chmod 600 "$RENDER_DIR/.env"
 
-# --- 5. rsync compose/ + rendered files ---
+# --- 6. rsync compose/ + rendered files ---
 info "syncing compose stack to $SSH_HOST"
 rsync -az --delete \
   --exclude '.env' \
@@ -221,30 +258,31 @@ scp_remote "$RENDER_DIR/Caddyfile" "$SSH_HOST:/opt/hermes-client/compose/Caddyfi
 scp_remote "$RENDER_DIR/.env"      "$SSH_HOST:/opt/hermes-client/compose/.env"
 ssh_remote "$SSH_HOST" "chmod 600 /opt/hermes-client/compose/.env"
 
-# --- 6. docker compose up -d ---
-info "docker compose up -d"
+# --- 7. docker compose up -d ---
+info "docker compose pull + up -d (first pull on a fresh VPS is ~1 GB)"
 ssh_remote "$SSH_HOST" "cd /opt/hermes-client/compose && sudo docker compose pull --quiet && sudo docker compose up -d --remove-orphans"
 
-# --- 7. wait for HTTPS ---
+# --- 8. wait for HTTPS ---
 "$REPO_ROOT/scripts/wait-for-https.sh" "https://$FQDN/health"
 
-# --- 8. smoke tests ---
+# --- 9. smoke tests ---
 if [[ "$SKIP_SMOKE" -eq 1 ]]; then
   warn "smoke tests skipped"
 else
   "$REPO_ROOT/scripts/smoke-test.sh" "$FQDN" --ssh-host "$SSH_HOST"
 fi
 
-# --- 9. inventory ---
+# --- 10. inventory ---
 "$REPO_ROOT/scripts/append-inventory.sh" "$SLUG" "$FQDN" "$IPV4" "$IMAGE_TAG"
 
+# --- final output. NO plaintext password — it's in the encrypted file. ---
 ok "deploy complete"
-info "URL:      https://$FQDN/"
-info "SSH:      ssh $SSH_HOST"
-info "username: $DASHBOARD_USERNAME"
-info "password: $DASHBOARD_PASSWORD"
+info "URL:        https://$FQDN/"
+info "SSH:        ssh $SSH_HOST"
+info "username:   $DASHBOARD_USERNAME"
+info "password:   stored in $(age_secret_path "$SLUG")"
 info ""
-warn "credentials also saved to: $CRED_FILE"
-warn "move to 1Password and delete the file. it is gitignored but lives on your disk in plaintext until you remove it."
+info "to read the password:"
+info "  age -d -i ~/.config/age/operator.key $(age_secret_path "$SLUG") | grep HERMES_DASHBOARD_PASSWORD"
 info ""
-info "next: review docs/client-inventory.md and commit (no secrets!)"
+info "next: review docs/client-inventory.md, commit, push"
