@@ -22,8 +22,9 @@ locals {
   })
 }
 
-# --- firewall ---
+# --- Hetzner VPS + firewall ---
 module "firewall" {
+  count  = var.vps_provider == "hetzner" ? 1 : 0
   source = "./modules/firewall"
 
   slug              = var.slug
@@ -31,8 +32,8 @@ module "firewall" {
   labels            = local.labels
 }
 
-# --- VPS ---
 module "vps" {
+  count  = var.vps_provider == "hetzner" ? 1 : 0
   source = "./modules/vps"
 
   slug            = var.slug
@@ -41,8 +42,37 @@ module "vps" {
   image           = var.hcloud_image
   ssh_public_keys = var.ssh_public_keys
   user_data       = local.user_data
-  firewall_id     = module.firewall.firewall_id
+  firewall_id     = module.firewall[0].firewall_id
   labels          = local.labels
+}
+
+# --- Vultr VPS + firewall ---
+module "vps_vultr" {
+  count  = var.vps_provider == "vultr" ? 1 : 0
+  source = "./modules/vps-vultr"
+
+  slug              = var.slug
+  region            = var.vultr_region
+  plan              = var.vultr_plan
+  os_id             = var.vultr_os_id
+  backups           = var.vultr_backups
+  ssh_public_keys   = var.ssh_public_keys
+  allowed_ssh_cidrs = var.allowed_ssh_cidrs
+  user_data         = local.user_data
+  labels            = local.labels
+}
+
+locals {
+  vps_ipv4 = coalesce(
+    try(module.vps[0].ipv4, null),
+    try(module.vps_vultr[0].ipv4, null),
+  )
+
+  vps_ipv6 = coalesce(
+    try(module.vps[0].ipv6, null),
+    try(module.vps_vultr[0].ipv6, null),
+    "",
+  )
 }
 
 # --- DNS ---
@@ -51,8 +81,8 @@ module "dns" {
 
   zone_id  = var.cloudflare_zone_id
   fqdn     = local.fqdn
-  ipv4     = module.vps.ipv4
-  ipv6     = module.vps.ipv6
+  ipv4     = local.vps_ipv4
+  ipv6     = local.vps_ipv6
   proxied  = var.cloudflare_proxied
   ttl      = var.dns_ttl
 }

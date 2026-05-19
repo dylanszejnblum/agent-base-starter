@@ -4,7 +4,7 @@
 # checklist of manual offboarding steps (data export, support access
 # revocation, billing).
 #
-# Usage: bin/destroy-client <slug> --domain DOMAIN [--yes]
+# Usage: bin/destroy-client <slug> --domain DOMAIN [--provider hetzner|vultr] [--yes]
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -14,16 +14,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-usage() { echo "Usage: $0 <slug> --domain DOMAIN [--yes]" >&2; exit 2; }
+usage() { echo "Usage: $0 <slug> --domain DOMAIN [--provider hetzner|vultr] [--yes]" >&2; exit 2; }
 
 [[ $# -ge 1 ]] || usage
 SLUG="$1"; shift
-DOMAIN=""; YES=0
+DOMAIN=""; VPS_PROVIDER="${VPS_PROVIDER:-hetzner}"; YES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --domain) DOMAIN="$2"; shift 2 ;;
-    --yes)    YES=1; shift ;;
+    --domain)   DOMAIN="$2"; shift 2 ;;
+    --provider) VPS_PROVIDER="$2"; shift 2 ;;
+    --yes)      YES=1; shift ;;
     -h|--help) usage ;;
     *) fatal "unknown arg: $1" ;;
   esac
@@ -32,10 +33,16 @@ done
 validate_slug "$SLUG"
 [[ -n "$DOMAIN" ]] || fatal "--domain is required"
 validate_domain "$DOMAIN"
-require_env HCLOUD_TOKEN CLOUDFLARE_API_TOKEN
+[[ "$VPS_PROVIDER" == "hetzner" || "$VPS_PROVIDER" == "vultr" ]] \
+  || fatal "--provider must be hetzner or vultr"
+require_env CLOUDFLARE_API_TOKEN
+case "$VPS_PROVIDER" in
+  hetzner) require_env HCLOUD_TOKEN ;;
+  vultr) require_env VULTR_API_KEY ;;
+esac
 require_cmd terraform
 
-warn "this will DESTROY the VPS and DNS record for $SLUG.$DOMAIN"
+warn "this will DESTROY the $VPS_PROVIDER VPS and DNS record for $SLUG.$DOMAIN"
 warn "named volumes on the VPS will be lost. confirm backups exist first."
 if [[ "$YES" -ne 1 ]]; then
   read -rp "type the slug ($SLUG) to confirm: " confirm
@@ -44,7 +51,7 @@ fi
 
 INFRA_DIR="$REPO_ROOT/infra"
 terraform -chdir="$INFRA_DIR" destroy -input=false -auto-approve \
-  -var "slug=$SLUG" -var "domain=$DOMAIN"
+  -var "slug=$SLUG" -var "domain=$DOMAIN" -var "vps_provider=$VPS_PROVIDER"
 
 # Mark inventory row as destroyed instead of deleting it, so the historical
 # record survives.

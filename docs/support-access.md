@@ -33,7 +33,7 @@ Same flow in reverse: remove the line, `terraform apply` per client. Revocation 
 If a key is suspected leaked:
 
 1. **Immediately** remove from every active client's `terraform.tfvars` and apply.
-2. Rotate the operator's Hetzner and Cloudflare tokens.
+2. Rotate the operator's compute-provider and Cloudflare tokens.
 3. Audit `~deploy/.ssh/authorized_keys` on each VPS to confirm the bad key is gone.
 4. Scan `journalctl -u ssh` for sessions authenticated by the suspect key fingerprint.
 
@@ -65,11 +65,12 @@ It cannot:
 - Install new packages
 - Read other users' homes
 
-For genuine root access (kernel updates, ufw changes), use Hetzner's web console with the rescue system — there is no SSH path to root by design.
+For genuine root access (kernel updates, ufw changes), use the VPS provider's web console with rescue/recovery mode — there is no SSH path to root by design.
 
 ## Out of band
 
 If SSH is completely broken (e.g. ufw misconfig locked out 22):
 
 - Hetzner Cloud Console → server → "Rescue" — boot into rescue mode, mount the disk, fix the config.
+- Vultr Customer Portal → instance → recovery/rescue options — boot into recovery mode, mount the disk, fix the config.
 - Last resort: `terraform destroy` + `terraform apply` (data lost unless backed up).

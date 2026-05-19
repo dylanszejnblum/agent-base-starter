@@ -4,10 +4,19 @@
 slug   = "demo"
 domain = "example.com"
 
+# --- VPS provider ---
+vps_provider = "hetzner" # hetzner / vultr
+
 # --- Hetzner ---
 hcloud_location    = "nbg1"     # nbg1 / fsn1 / hel1 / ash / hil
 hcloud_server_type = "cx22"     # cheapest 2 vCPU / 4 GB Intel-x86 plan
 hcloud_image       = "ubuntu-24.04"
+
+# --- Vultr ---
+vultr_region  = "ord"           # ord = Chicago; mex = Mexico City if plan is available
+vultr_plan    = "vc2-2c-4gb"    # 2 vCPU / 4 GB / 80 GB
+vultr_os_id   = 2284            # Ubuntu 24.04 LTS
+vultr_backups = "disabled"      # paid Vultr add-on; repo backups are separate
 
 # --- SSH ---
 # Provide the public-key strings, not file paths. Multiple keys allowed.

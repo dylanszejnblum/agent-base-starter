@@ -23,6 +23,7 @@ End state: same operational target as M2 (`https://<slug>.<domain>/` behind basi
 | `age` installed locally | `command -v age && age --version` (macOS: `brew install age`; Debian: `apt install age`) |
 | age key generated | `ls -la ~/.config/age/operator.key` |
 | Public key in `secrets/.recipients` | `grep "$(age-keygen -y ~/.config/age/operator.key)" secrets/.recipients` |
+| Compute API token | `HCLOUD_TOKEN` for Hetzner or `VULTR_API_KEY` for Vultr |
 
 ## One-time operator setup
 
@@ -60,10 +61,20 @@ export OPENAI_API_KEY='sk-...'         # only needed for first-time init of this
 ./bin/deploy-client demo --domain example.com
 ```
 
+For Vultr, swap the compute token and provider flag:
+
+```bash
+export VULTR_API_KEY='...'
+export CLOUDFLARE_API_TOKEN='...'
+export OPENAI_API_KEY='sk-...'
+
+./bin/deploy-client demo --domain example.com --provider vultr --vultr-region ord
+```
+
 What you should see, first time for a new slug:
 
 ```
-[info] slug=demo fqdn=demo.example.com location=nbg1 size=cx22 image_tag=m3-age
+[info] slug=demo fqdn=demo.example.com provider=hetzner location=nbg1 size=cx22 vultr_region=ord vultr_plan=vc2-2c-4gb image_tag=m3-age
 [info] no encrypted secrets for demo — initialising secrets/demo.env.age
 [ok]   wrote secrets/demo.env.age
 [warn] remember to: git add secrets/demo.env.age && git commit -m 'ops: init demo secrets'
@@ -179,6 +190,25 @@ Your operator key is not in `.recipients`. Either:
 ### `caddy hash-password produced empty hash`
 
 Docker isn't running locally. Start Docker Desktop / `systemctl start docker` and retry.
+
+### `missing required env vars: HCLOUD_TOKEN` or `VULTR_API_KEY`
+
+The deploy script now requires the token for the selected compute provider only:
+
+- Default: `./bin/deploy-client demo --domain example.com` requires `HCLOUD_TOKEN`.
+- Vultr: `./bin/deploy-client demo --domain example.com --provider vultr` requires `VULTR_API_KEY`.
+
+`CLOUDFLARE_API_TOKEN` is always required because DNS still lives in Cloudflare.
+
+### Vultr OS/plan lookup
+
+Defaults are `vultr_region=ord`, `vultr_plan=vc2-2c-4gb`, and `vultr_os_id=2284` for Ubuntu 24.04 LTS. If Vultr changes the OS catalog, confirm with:
+
+```bash
+vultr-cli os list | grep -i 'Ubuntu 24.04'
+vultr-cli plans list | grep vc2-2c-4gb
+vultr-cli regions list
+```
 
 ### Smoke test fails: dashboard returns 401 with correct creds
 
