@@ -156,11 +156,14 @@ ssh deploy@<ip>
 sudo grep HERMES_DASHBOARD /opt/hermes-client/compose/.env
 # Should show:
 #   HERMES_DASHBOARD_USERNAME=ops
-#   HERMES_DASHBOARD_PASSWORD_HASH=$2a$14$...
-# The hash should be ~60 chars and start with $2a$
+#   HERMES_DASHBOARD_PASSWORD_HASH=$$2a$$14$$...
+# The rendered .env escapes $ as $$ for Docker Compose. Inside Caddy, it should
+# be a normal bcrypt hash:
+cd /opt/hermes-client/compose
+sudo docker compose exec -T caddy env | grep '^DASHBOARD_PASSWORD_HASH='
 ```
 
-Common cause: shell-expansion mangled the `$` chars when the rendered .env was copied. The deploy script writes via heredoc so this should not happen, but worth checking.
+Common cause: Docker Compose interpolation mangled the `$` chars. The deploy script escapes them before writing `.env`; the smoke test also checks the Caddy container sees a valid bcrypt hash.
 
 ### Dashboard logs show "OPENAI_API_KEY not set"
 

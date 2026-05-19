@@ -1,0 +1,32 @@
+# Smoke-test override for IP-only deploys with self-signed TLS.
+# Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.smoke.yml up -d
+
+services:
+  caddy:
+    ports: !override
+      - "80:80"
+      - "443:443"
+    environment:
+      FQDN: ${FQDN:-127.0.0.1}
+      ACME_EMAIL: ${ACME_EMAIL:-smoke@example.invalid}
+      DASHBOARD_USERNAME: ${HERMES_DASHBOARD_USERNAME:?must be set}
+      DASHBOARD_PASSWORD_HASH: ${HERMES_DASHBOARD_PASSWORD_HASH:?must be set}
+    volumes: !override
+      - ./Caddyfile.smoke:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  hermes-gateway:
+    environment:
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+
+  hermes-dashboard:
+    environment:
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}

@@ -31,8 +31,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 `bin/deploy-client` bcrypt-hashes `HERMES_DASHBOARD_PASSWORD` at deploy time
-and writes `HERMES_DASHBOARD_PASSWORD_HASH` into the VPS-side `.env`. The
-plaintext never leaves your machine.
+and writes `HERMES_DASHBOARD_PASSWORD_HASH` into the VPS-side `.env`, escaping
+`$` as `$$` so Docker Compose does not mangle the bcrypt value. The plaintext
+never leaves your machine.
 
 ## Workflow
 

@@ -27,6 +27,7 @@
 # Optional env (consumed only during first-time init of secrets/<slug>.env.age):
 #   OPENAI_API_KEY         seed value, prompted if absent
 #   ANTHROPIC_API_KEY      seed value, prompted if absent
+#   OPENAI_BASE_URL        optional OpenAI-compatible endpoint override
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -60,6 +61,7 @@ Env required:  HCLOUD_TOKEN, CLOUDFLARE_API_TOKEN
 Env optional:  OPENAI_API_KEY / ANTHROPIC_API_KEY (only used during first-time
                secret init for this slug; on subsequent deploys the values come
                from secrets/<slug>.env.age and these env vars are ignored)
+               OPENAI_BASE_URL is passed through to the VPS-side Compose env.
 
 Secrets live in secrets/<slug>.env.age, age-encrypted. See secrets/README.md
 for the one-time operator setup (age-keygen + adding your key to .recipients).
@@ -217,6 +219,7 @@ ok "vps ready: $SSH_HOST ($IPV4)"
 info "bcrypt-hashing dashboard password (via disposable caddy container)"
 DASHBOARD_PASSWORD_HASH="$(hash_password_caddy "$HERMES_DASHBOARD_PASSWORD")"
 [[ -n "$DASHBOARD_PASSWORD_HASH" ]] || fatal "caddy hash-password produced empty hash (is docker running locally?)"
+DASHBOARD_PASSWORD_HASH_ESCAPED="$(escape_compose_env_value "$DASHBOARD_PASSWORD_HASH")"
 
 # --- 5. render templates ---
 RENDER_DIR="$(mktemp -d)"
@@ -236,8 +239,9 @@ HERMES_UID=10000
 HERMES_GID=10000
 HERMES_PROFILE=$SLUG
 HERMES_DASHBOARD_USERNAME=$DASHBOARD_USERNAME
-HERMES_DASHBOARD_PASSWORD_HASH=$DASHBOARD_PASSWORD_HASH
+HERMES_DASHBOARD_PASSWORD_HASH=$DASHBOARD_PASSWORD_HASH_ESCAPED
 OPENAI_API_KEY=${OPENAI_API_KEY:-}
+OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 EOF
 chmod 600 "$RENDER_DIR/.env"

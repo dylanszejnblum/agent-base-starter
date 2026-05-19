@@ -8,11 +8,11 @@
 # against putting it on a network without auth. The DASHBOARD_USERNAME /
 # DASHBOARD_PASSWORD_HASH env vars are passed in from compose and read here
 # via Caddy's {$VAR} syntax (NOT {{VAR}} which is sed-substituted).
-
 {
 	email {{ACME_EMAIL}}
 	# To debug ACME issues swap to staging:
 	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+	auto_https disable_redirects
 	servers {
 		protocols h1 h2 h3
 	}
@@ -30,35 +30,35 @@
 		-Server
 	}
 
-	# Public, unauthenticated health probe Caddy answers directly.
-	# Used by smoke tests + uptime monitors.
-	@health path /health
-	respond @health 200 {
-		body `{"status":"ok","fqdn":"{{FQDN}}"}`
-		close
-	}
-
-	# Everything else requires basic_auth and reverse-proxies to the
-	# Hermes dashboard. basic_auth is acceptable for the V1 pilot because
-	# (a) one VPS per client = one credential set, (b) HTTPS is enforced
-	# so the credential never travels plaintext, (c) the password is
-	# bcrypt-hashed at rest. Replace with proper SSO once we have >5 clients.
-	basic_auth {
-		{$DASHBOARD_USERNAME} {$DASHBOARD_PASSWORD_HASH}
-	}
-
-	reverse_proxy hermes-dashboard:9119 {
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Real-IP {remote_host}
-		# Dashboard is slow to first-respond on cold start (~30s while the
-		# venv lazy-imports providers); be patient.
-		transport http {
-			read_timeout 60s
-			write_timeout 60s
+	handle /health {
+		respond `{"status":"ok","fqdn":"{{FQDN}}"}` 200 {
+			close
 		}
-		fail_duration 30s
-		max_fails 3
-		unhealthy_status 5xx
+	}
+
+	handle {
+		# Everything else requires basic_auth and reverse-proxies to the
+		# Hermes dashboard. basic_auth is acceptable for the V1 pilot because
+		# (a) one VPS per client = one credential set, (b) HTTPS is enforced
+		# so the credential never travels plaintext, (c) the password is
+		# bcrypt-hashed at rest. Replace with proper SSO once we have >5 clients.
+		basic_auth {
+			{$DASHBOARD_USERNAME} {$DASHBOARD_PASSWORD_HASH}
+		}
+
+		reverse_proxy hermes-dashboard:9119 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+			# Dashboard is slow to first-respond on cold start (~30s while the
+			# venv lazy-imports providers); be patient.
+			transport http {
+				read_timeout 60s
+				write_timeout 60s
+			}
+			fail_duration 30s
+			max_fails 3
+			unhealthy_status 5xx
+		}
 	}
 
 	log {
@@ -68,5 +68,15 @@
 			roll_keep_for 720h
 		}
 		format json
+	}
+}
+
+:80 {
+	handle /health {
+		respond "ok-http" 200
+	}
+
+	handle {
+		redir https://{{FQDN}}{uri} permanent
 	}
 }

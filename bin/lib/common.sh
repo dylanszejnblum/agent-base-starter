@@ -126,6 +126,14 @@ if [[ -z "${COMMON_SH_LOADED:-}" ]]; then
     docker run --rm caddy:2-alpine caddy hash-password --plaintext "$plain" 2>/dev/null
   }
 
+  # Docker Compose interpolates .env values before injecting them into service
+  # environments. Bcrypt hashes contain `$`, so they must be escaped as `$$`
+  # in the .env file to survive as literal `$` inside the Caddy container.
+  escape_compose_env_value() {
+    local value="$1"
+    printf '%s' "$value" | sed 's/\$/\$\$/g'
+  }
+
   # --- age secret helpers ---
   # Defaults reflect the operator-side conventions documented in secrets/README.md.
   age_key_path()        { printf '%s\n' "${AGE_KEY:-$HOME/.config/age/operator.key}"; }
