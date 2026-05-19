@@ -170,6 +170,16 @@ if [[ -n "$SSH_HOST" ]]; then
   }
   check "dashboard reachable from caddy on internal network" _check_dashboard_reachable_internally
 
+  _check_bcrypt_hash_survived_compose() {
+    local actual
+    actual="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T caddy env | grep '^DASHBOARD_PASSWORD_HASH=' | cut -d= -f2-" 2>/dev/null || true)"
+    [[ "$actual" =~ ^\$2[aby]\$[0-9][0-9]\$ ]] || {
+      info "DASHBOARD_PASSWORD_HASH in caddy env: $actual"
+      return 1
+    }
+  }
+  check "dashboard bcrypt hash survived compose interpolation" _check_bcrypt_hash_survived_compose
+
   _check_basic_auth_required() {
     # Without credentials, the proxy path returns 401; /health is unauthed.
     local code

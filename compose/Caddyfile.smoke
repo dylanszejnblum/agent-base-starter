@@ -1,0 +1,38 @@
+{
+	local_certs
+	auto_https disable_redirects
+	admin off
+	default_sni {$FQDN}
+}
+
+# IP-only smoke target: TLS via Caddy's internal CA for the configured FQDN/IP.
+https://{$FQDN} {
+	tls internal
+	encode zstd gzip
+
+	handle /health {
+		respond `{"status":"ok","mode":"smoke"}` 200 {
+			close
+		}
+	}
+
+	handle {
+		basic_auth {
+			{$DASHBOARD_USERNAME} {$DASHBOARD_PASSWORD_HASH}
+		}
+
+		reverse_proxy hermes-dashboard:9119
+	}
+}
+
+# Catch any Host header so Docker healthchecks against 127.0.0.1 do not follow
+# an HTTP->HTTPS redirect and fail TLS before Caddy is considered healthy.
+:80 {
+	handle /health {
+		respond "ok-http" 200
+	}
+
+	handle {
+		redir https://{$FQDN}{uri} permanent
+	}
+}

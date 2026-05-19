@@ -1,24 +1,36 @@
 # Local dev Caddyfile. Uses Caddy's `internal` issuer (self-signed cert)
 # so HTTPS works without DNS or LE. Trust the cert locally with:
 #   docker compose exec caddy caddy trust
-
 {
 	local_certs
+	auto_https disable_redirects
 	admin off
 }
 
 localhost, 127.0.0.1 {
 	encode zstd gzip
 
-	@health path /health
-	respond @health 200 {
-		body `{"status":"ok","mode":"local"}`
-		close
+	handle /health {
+		respond `{"status":"ok","mode":"local"}` 200 {
+			close
+		}
 	}
 
-	basic_auth {
-		{$DASHBOARD_USERNAME} {$DASHBOARD_PASSWORD_HASH}
+	handle {
+		basic_auth {
+			{$DASHBOARD_USERNAME} {$DASHBOARD_PASSWORD_HASH}
+		}
+
+		reverse_proxy hermes-dashboard:9119
+	}
+}
+
+:80 {
+	handle /health {
+		respond "ok-http" 200
 	}
 
-	reverse_proxy hermes-dashboard:9119
+	handle {
+		redir https://localhost:8443{uri} permanent
+	}
 }

@@ -17,6 +17,7 @@
 # Optional:
 #   HERMES_UID, HERMES_GID        match host volume ownership (default 10000)
 #   HERMES_PROFILE                profile name to create on first boot (default: slug)
+#   OPENAI_BASE_URL               OpenAI-compatible endpoint override
 
 name: hermes-${COMPOSE_SLUG:-default}
 
@@ -66,7 +67,7 @@ services:
       - edge
       - internal
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:80"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -97,6 +98,7 @@ services:
       # The entrypoint sources /opt/data/.env at runtime; we also pass these
       # through compose so they're visible to `docker compose exec` debugging.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - hermes_home:/opt/data
@@ -134,6 +136,7 @@ services:
       HERMES_GID: ${HERMES_GID:-10000}
       HERMES_HOME: /opt/data
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - hermes_home:/opt/data
@@ -147,9 +150,11 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      # Dashboard answers HEAD / once initialised (~10-30s on first boot
+      # Dashboard answers / once initialised (~10-30s on first boot
       # because the .venv lazy-imports providers).
-      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:9119/ || exit 1"]
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:9119/',timeout=5); sys.exit(0 if r.status==200 else 1)\" || exit 1"
       interval: 30s
       timeout: 10s
       retries: 5

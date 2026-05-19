@@ -184,7 +184,7 @@ Docker isn't running locally. Start Docker Desktop / `systemctl start docker` an
 
 Possible causes:
 
-- Hash didn't render correctly in `.env`. Check on the VPS: `sudo grep HERMES_DASHBOARD /opt/hermes-client/compose/.env`. Should be ~60 chars starting `$2a$14$`.
+- Hash didn't survive Compose interpolation. Check the runtime value: `cd /opt/hermes-client/compose && sudo docker compose exec -T caddy env | grep '^DASHBOARD_PASSWORD_HASH='`. It should be a normal bcrypt hash starting `$2a$`, `$2b$`, or `$2y$`.
 - The password in the encrypted file is wrong. Decrypt and compare to what you're typing.
 
 ## Teardown
