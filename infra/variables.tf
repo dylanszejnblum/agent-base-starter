@@ -125,6 +125,12 @@ variable "dns_ttl" {
   default     = 300
 }
 
+variable "create_ipv6_dns_record" {
+  description = "Whether to create a Cloudflare AAAA record. Disable for providers whose IPv6 address is unknown until apply."
+  type        = bool
+  default     = false
+}
+
 # --- compose/runtime hooks (passed through to outputs for downstream scripts) ---
 variable "image_tag" {
   description = "Image tag pin used downstream (e.g. for inventory). Not consumed by Terraform itself."

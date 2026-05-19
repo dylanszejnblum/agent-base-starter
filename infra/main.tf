@@ -79,10 +79,11 @@ locals {
 module "dns" {
   source = "./modules/dns"
 
-  zone_id  = var.cloudflare_zone_id
-  fqdn     = local.fqdn
-  ipv4     = local.vps_ipv4
-  ipv6     = local.vps_ipv6
-  proxied  = var.cloudflare_proxied
-  ttl      = var.dns_ttl
+  zone_id            = var.cloudflare_zone_id
+  fqdn               = local.fqdn
+  ipv4               = local.vps_ipv4
+  ipv6               = local.vps_ipv6
+  create_ipv6_record = var.create_ipv6_dns_record
+  proxied            = var.cloudflare_proxied
+  ttl                = var.dns_ttl
 }

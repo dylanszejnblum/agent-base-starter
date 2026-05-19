@@ -9,7 +9,7 @@ resource "cloudflare_record" "a" {
 }
 
 resource "cloudflare_record" "aaaa" {
-  count = var.ipv6 == "" ? 0 : 1
+  count = var.create_ipv6_record ? 1 : 0
 
   zone_id = var.zone_id
   name    = var.fqdn

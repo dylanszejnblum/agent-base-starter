@@ -32,6 +32,7 @@ ssh_public_keys = [
 cloudflare_zone_id = "00000000000000000000000000000000"
 cloudflare_proxied = false      # must be false for HTTP-01 ACME
 dns_ttl            = 300
+create_ipv6_dns_record = false  # keep false for single-pass Vultr plans
 
 # --- Inventory ---
 image_tag = "m1-whoami"

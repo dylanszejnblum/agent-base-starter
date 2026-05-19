@@ -7,11 +7,16 @@
 # without the env vars needed for the selected VPS provider.
 
 provider "hcloud" {
-  # token sourced from HCLOUD_TOKEN env var
+  # In Vultr mode no hcloud resources are planned, but Terraform still
+  # configures every declared provider. Use a harmless placeholder so Vultr
+  # deploys do not require HCLOUD_TOKEN.
+  token = var.vps_provider == "hetzner" ? null : "0000000000000000000000000000000000000000000000000000000000000000"
 }
 
 provider "vultr" {
-  # api_key sourced from VULTR_API_KEY env var
+  # Same pattern as hcloud: selected provider reads its real token from env;
+  # inactive provider gets a placeholder to pass provider configuration.
+  api_key = var.vps_provider == "vultr" ? null : "unused"
 }
 
 provider "cloudflare" {
