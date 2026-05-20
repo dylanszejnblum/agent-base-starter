@@ -43,9 +43,15 @@ check() {
 
 # --- 1. DNS resolves ---
 _check_dns() {
-  local ip
-  ip="$(dig +short @1.1.1.1 "$FQDN" A | tail -n1)"
-  [[ -n "$ip" ]] && info "$FQDN -> $ip"
+  local resolver ip
+  for resolver in @1.1.1.1 @8.8.8.8 ""; do
+    ip="$(dig +short $resolver "$FQDN" A 2>/dev/null | tail -n1 || true)"
+    if [[ -n "$ip" ]]; then
+      info "$FQDN -> $ip"
+      return 0
+    fi
+  done
+  return 1
 }
 check "DNS A record present" _check_dns
 
@@ -109,19 +115,18 @@ if [[ -n "$SSH_HOST" ]]; then
 
   _check_no_errors_in_logs() {
     local n
-    # Hermes prints colourful banners on boot; match on uppercase ERROR/FATAL
-    # at the start of a log line only (json driver prefixes with timestamp +
-    # stream so we anchor after the prefix).
-    n="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD logs --tail=200 2>&1 | grep -ciE '(ERROR|FATAL|Traceback)' || true")"
+    # Caddy emits lower-case JSON fields named "error" during normal ACME
+    # setup. Only fail on explicit app-level uppercase failures or tracebacks.
+    n="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD logs --tail=200 2>&1 | grep -cE '(ERROR|FATAL|Traceback)' || true")"
     info "error/fatal/traceback lines in last 200 log entries: $n"
     [[ "$n" -le 0 ]]
   }
   check "no ERROR/FATAL/Traceback in last 200 compose log lines" _check_no_errors_in_logs
 
   _check_audit_writable() {
-    ssh_remote "$SSH_HOST" "sudo test -w /var/log/hermes/audit" >/dev/null 2>&1
+    ssh_remote "$SSH_HOST" "test -d /var/log/hermes/audit && stat -c '%U:%G %a' /var/log/hermes/audit | grep -q '^hermes:hermes 750$'" >/dev/null 2>&1
   }
-  check "audit log path is writable" _check_audit_writable
+  check "audit log path exists with hermes ownership" _check_audit_writable
 
   # --- Hermes-specific checks ---
   # The dashboard container is the one we exec into; gateway has the same
@@ -130,7 +135,7 @@ if [[ -n "$SSH_HOST" ]]; then
 
   _check_hermes_version() {
     local out
-    out="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T hermes-dashboard hermes --version" 2>&1 || true)"
+    out="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T hermes-dashboard /opt/hermes/.venv/bin/hermes --version" 2>&1 || true)"
     info "$out"
     echo "$out" | grep -qi "Hermes Agent v"
   }
@@ -138,13 +143,13 @@ if [[ -n "$SSH_HOST" ]]; then
 
   _check_hermes_status() {
     # `hermes status` exits 0 when config + at least one provider is set.
-    ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T hermes-dashboard hermes status" >/dev/null 2>&1
+    ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T hermes-dashboard /opt/hermes/.venv/bin/hermes status" >/dev/null 2>&1
   }
   check "hermes status reports configured" _check_hermes_status
 
   _check_hermes_profile() {
     local out
-    out="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T hermes-dashboard hermes profile list" 2>&1 || true)"
+    out="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T hermes-dashboard /opt/hermes/.venv/bin/hermes profile list" 2>&1 || true)"
     info "$(echo "$out" | head -3)"
     # Default profile is created automatically by the entrypoint; we just
     # need the list command to succeed and print something.
@@ -156,7 +161,7 @@ if [[ -n "$SSH_HOST" ]]; then
     # `gateway status` returns running once the foreground process has
     # finished initialisation.
     local out
-    out="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T hermes-gateway hermes gateway status" 2>&1 || true)"
+    out="$(ssh_remote "$SSH_HOST" "$COMPOSE_CMD exec -T hermes-gateway /opt/hermes/.venv/bin/hermes gateway status" 2>&1 || true)"
     info "$(echo "$out" | head -3)"
     # Some Hermes versions report "running" via systemd-style output; others
     # via a status table. Accept either as a non-error exit.
