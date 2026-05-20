@@ -19,6 +19,12 @@ variable "ipv6" {
   default     = ""
 }
 
+variable "create_ipv6_record" {
+  description = "Whether to create an AAAA record. Must be known at plan time."
+  type        = bool
+  default     = true
+}
+
 variable "proxied" {
   description = "Cloudflare proxy/orange-cloud. Must be false for HTTP-01 ACME via Caddy."
   type        = bool

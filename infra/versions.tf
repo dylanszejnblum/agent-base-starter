@@ -6,6 +6,10 @@ terraform {
       source  = "hetznercloud/hcloud"
       version = "~> 1.45"
     }
+    vultr = {
+      source  = "vultr/vultr"
+      version = "~> 2.31"
+    }
     cloudflare = {
       source  = "cloudflare/cloudflare"
       version = "~> 4.30"

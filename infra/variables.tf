@@ -19,6 +19,18 @@ variable "domain" {
   }
 }
 
+# --- VPS provider ---
+variable "vps_provider" {
+  description = "Compute provider for the client VPS. Hetzner remains the default; Vultr is opt-in."
+  type        = string
+  default     = "hetzner"
+
+  validation {
+    condition     = contains(["hetzner", "vultr"], var.vps_provider)
+    error_message = "vps_provider must be one of: hetzner, vultr."
+  }
+}
+
 # --- hetzner ---
 variable "hcloud_location" {
   description = "Hetzner Cloud location. nbg1 = Nuremberg DE, fsn1 = Falkenstein DE, hel1 = Helsinki FI, ash = Ashburn US (closer to LATAM), hil = Hillsboro US."
@@ -41,6 +53,36 @@ variable "hcloud_image" {
   description = "Hetzner base image. Pin to a Ubuntu LTS."
   type        = string
   default     = "ubuntu-24.04"
+}
+
+# --- vultr ---
+variable "vultr_region" {
+  description = "Vultr region code. ord = Chicago, mex = Mexico City."
+  type        = string
+  default     = "ord"
+}
+
+variable "vultr_plan" {
+  description = "Vultr plan ID. vc2-2c-4gb = 2 vCPU / 4 GB / 80 GB Cloud Compute."
+  type        = string
+  default     = "vc2-2c-4gb"
+}
+
+variable "vultr_os_id" {
+  description = "Vultr OS ID. 2284 is Ubuntu 24.04 LTS in Vultr's OS catalog."
+  type        = number
+  default     = 2284
+}
+
+variable "vultr_backups" {
+  description = "Whether Vultr automatic backups are enabled. These are a paid add-on; repo-managed backups are separate."
+  type        = string
+  default     = "disabled"
+
+  validation {
+    condition     = contains(["enabled", "disabled"], var.vultr_backups)
+    error_message = "vultr_backups must be enabled or disabled."
+  }
 }
 
 # --- access ---
@@ -81,6 +123,12 @@ variable "dns_ttl" {
   description = "TTL for DNS records, seconds. Low during deploy, raise after stable."
   type        = number
   default     = 300
+}
+
+variable "create_ipv6_dns_record" {
+  description = "Whether to create a Cloudflare AAAA record. Disable for providers whose IPv6 address is unknown until apply."
+  type        = bool
+  default     = false
 }
 
 # --- compose/runtime hooks (passed through to outputs for downstream scripts) ---

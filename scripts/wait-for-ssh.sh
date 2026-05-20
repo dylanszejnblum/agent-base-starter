@@ -47,8 +47,20 @@ while true; do
 done
 
 info "waiting for cloud-init to finish"
-if ssh_remote "$TARGET" "sudo cloud-init status --wait"; then
+if ssh_remote "$TARGET" "sudo -n cloud-init status --wait"; then
   ok "cloud-init done"
-else
-  fatal "cloud-init failed; ssh in and check /var/log/cloud-init-output.log"
+  exit 0
 fi
+
+warn "sudo cloud-init status unavailable for $TARGET; falling back to /etc/agent-base/instance.json"
+while true; do
+  if ssh_remote "$TARGET" "grep -q '\"ready_at\"' /etc/agent-base/instance.json" 2>/dev/null; then
+    ok "cloud-init done"
+    exit 0
+  fi
+  now="$(date +%s)"
+  if (( now - start > TIMEOUT )); then
+    fatal "cloud-init did not mark ready within ${TIMEOUT}s; ssh in and check /var/log/cloud-init-output.log"
+  fi
+  sleep 5
+done

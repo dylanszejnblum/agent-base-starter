@@ -5,6 +5,7 @@ SHELL := /usr/bin/env bash
 # --- defaults ---
 SLUG ?=
 DOMAIN ?=
+PROVIDER ?= hetzner
 TF_DIR := infra
 COMPOSE_DIR := compose
 
@@ -23,8 +24,8 @@ help:
 	@echo "  make local-up         # bring up compose locally (self-signed)"
 	@echo "  make local-down       # tear down local compose"
 	@echo ""
-	@echo "Required env: HCLOUD_TOKEN, CLOUDFLARE_API_TOKEN"
-	@echo "Required vars for plan/apply/deploy: SLUG=<slug> DOMAIN=<example.com>"
+	@echo "Required env: CLOUDFLARE_API_TOKEN plus HCLOUD_TOKEN or VULTR_API_KEY"
+	@echo "Required vars for plan/apply/deploy: SLUG=<slug> DOMAIN=<example.com> [PROVIDER=hetzner|vultr]"
 
 # --- formatting / linting ---
 .PHONY: fmt
@@ -53,20 +54,20 @@ init:
 
 .PHONY: plan
 plan: _require_slug_domain init
-	terraform -chdir=$(TF_DIR) plan -var "slug=$(SLUG)" -var "domain=$(DOMAIN)"
+	terraform -chdir=$(TF_DIR) plan -var "slug=$(SLUG)" -var "domain=$(DOMAIN)" -var "vps_provider=$(PROVIDER)"
 
 .PHONY: apply
 apply: _require_slug_domain init
-	terraform -chdir=$(TF_DIR) apply -auto-approve -var "slug=$(SLUG)" -var "domain=$(DOMAIN)"
+	terraform -chdir=$(TF_DIR) apply -auto-approve -var "slug=$(SLUG)" -var "domain=$(DOMAIN)" -var "vps_provider=$(PROVIDER)"
 
 .PHONY: destroy
 destroy: _require_slug_domain
-	terraform -chdir=$(TF_DIR) destroy -auto-approve -var "slug=$(SLUG)" -var "domain=$(DOMAIN)"
+	terraform -chdir=$(TF_DIR) destroy -auto-approve -var "slug=$(SLUG)" -var "domain=$(DOMAIN)" -var "vps_provider=$(PROVIDER)"
 
 # --- top-level deploy wrapper ---
 .PHONY: deploy
 deploy: _require_slug_domain
-	./bin/deploy-client $(SLUG) --domain $(DOMAIN)
+	./bin/deploy-client $(SLUG) --domain $(DOMAIN) --provider $(PROVIDER)
 
 .PHONY: smoke
 smoke: _require_slug_domain

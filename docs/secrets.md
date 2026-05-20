@@ -6,7 +6,7 @@ No secret value is ever committed in plaintext, in Terraform state, or in a cont
 
 Three trust boundaries:
 
-1. **Operator machine** — holds the age private key, the operator's OpenAI/Anthropic key, the Hetzner/Cloudflare tokens. Tokens are env vars per session; the age key is a file on disk (chmod 600).
+1. **Operator machine** — holds the age private key, the operator's OpenAI/Anthropic key, the compute-provider/Cloudflare tokens. Tokens are env vars per session; the age key is a file on disk (chmod 600).
 2. **VPS host** — holds `/opt/hermes-client/compose/.env` (chmod 600, owned by `deploy`). This file is the only thing Docker reads. The dashboard password lands here as a **bcrypt hash**, never plaintext.
 3. **Container** — receives secrets as env vars at start time. No secret is written to disk inside containers.
 
@@ -14,7 +14,7 @@ Three trust boundaries:
 
 | Secret | Where it lives | Who can read it |
 |---|---|---|
-| `HCLOUD_TOKEN` | Operator env, password manager | Operator |
+| `HCLOUD_TOKEN` / `VULTR_API_KEY` | Operator env, password manager | Operator |
 | `CLOUDFLARE_API_TOKEN` | Operator env, password manager | Operator |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | `secrets/<slug>.env.age` (encrypted, in repo) | Operators whose public keys are in `.recipients` |
 | `HERMES_DASHBOARD_PASSWORD` (plaintext) | Same encrypted file | Same |

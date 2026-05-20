@@ -5,11 +5,11 @@ Status: **M5 stub.** Comprehensive incident playbook written after M5 hardening.
 ## Triage flowchart (M1-level)
 
 1. **Can you `curl https://<fqdn>/health`?**
-   - No → DNS issue, firewall issue, or VPS down. Check `dig <fqdn>` and Hetzner console.
+   - No → DNS issue, firewall issue, or VPS down. Check `dig <fqdn>` and the selected VPS provider console.
    - Yes but wrong content → app issue. SSH in.
 
 2. **`ssh deploy@<ip>` works?**
-   - No → use Hetzner Cloud Console rescue. Check ufw, fail2ban.
+   - No → use provider console rescue/recovery. Check ufw, fail2ban.
    - Yes → continue.
 
 3. **`sudo docker compose ps` shows healthy containers?**

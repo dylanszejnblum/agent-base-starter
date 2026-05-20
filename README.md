@@ -13,7 +13,7 @@
 ╰───────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Single-command, production-grade installer for a containerized [Hermes Agent](https://github.com/NousResearch/hermes-agent) client instance on a fresh VPS. One operator command provisions infrastructure (Hetzner + Cloudflare + firewall), prepares the host (Docker + hardening), brings up Caddy + Hermes with automatic Let's Encrypt HTTPS, and runs a 14-point smoke test.
+Single-command, production-grade installer for a containerized [Hermes Agent](https://github.com/NousResearch/hermes-agent) client instance on a fresh VPS. One operator command provisions infrastructure (Hetzner or Vultr + Cloudflare + firewall), prepares the host (Docker + hardening), brings up Caddy + Hermes with automatic Let's Encrypt HTTPS, and runs a 14-point smoke test.
 
 > [deploy runbook](docs/m3-runbook.md) · [secrets](secrets/README.md) · [security baseline](docs/secrets.md) · [support access](docs/support-access.md)
 
@@ -26,6 +26,7 @@ Single-command, production-grade installer for a containerized [Hermes Agent](ht
 | M1 — Skeleton | ✓ done | Terraform (Hetzner + Cloudflare), cloud-init, compose with Caddy, smoke tests |
 | M2 — Hermes services | ✓ done | Official `nousresearch/hermes-agent` image, gateway + dashboard, Caddy basic_auth |
 | M3 — age secrets + image pin | ✓ done | `secrets/<slug>.env.age` (encrypted in repo), pinned Hermes SHA, stable dashboard password |
+| M3.5 — Vultr provider | in progress | Provider-selectable VPS: Hetzner default, Vultr opt-in |
 | M4 — Backups + runbooks | — | `scripts/backup-client.sh`, off-VPS sync, restore tested |
 | M5 — Production-ready | — | fail2ban tuning, gitleaks/trivy in CI, first paying-client deploy |
 
@@ -37,12 +38,12 @@ Strategy & spec live in the sibling `agent-consultancy` repo:
 ## What it does — one screen
 
 ```text
-        operator laptop                                   client VPS (Hetzner)
+        operator laptop                                   client VPS (Hetzner/Vultr)
         ──────────────────                                ──────────────────────
         $ ./bin/deploy-client acme                        ┌──────────────────┐
                 │                                         │   caddy:2-alpine │
                 ├─ terraform apply ─────────────────────► │   ↓ basic_auth   │
-                │   (hetzner + cloudflare + firewall)     ├──────────────────┤
+                │   (vps provider + cloudflare + firewall)├──────────────────┤
                 ├─ wait for SSH + cloud-init              │  hermes-gateway  │
                 │   (Docker, ufw, fail2ban, deploy user)  │  hermes-dashboard│
                 ├─ wait for DNS                           │   :9119 (proxied)│
@@ -72,12 +73,15 @@ cp infra/terraform.tfvars.example infra/terraform.tfvars
 $EDITOR infra/terraform.tfvars   # slug, domain, ssh_public_keys, zone_id
 
 # 3. Export tokens for this session
-export HCLOUD_TOKEN=...
+export HCLOUD_TOKEN=...           # Hetzner default
+# or: export VULTR_API_KEY=...    # when using --provider vultr
 export CLOUDFLARE_API_TOKEN=...
 export OPENAI_API_KEY=...        # seed for first-time init
 
 # 4. Provision (first run prompts interactively if env keys missing)
 ./bin/deploy-client acme --domain example.com
+# Vultr:
+# ./bin/deploy-client acme --domain example.com --provider vultr --vultr-region ord
 
 # 5. Commit the encrypted secrets file
 git add secrets/acme.env.age && git commit -m "ops: init acme secrets"
@@ -101,7 +105,8 @@ End state: dashboard reachable at `https://<slug>.<domain>` behind basic_auth ov
 | `age` | Per-client secret encryption — `brew install age` / `apt install age` |
 | `docker` (local) | Bcrypt-hashes dashboard passwords via a disposable `caddy:2-alpine` |
 | `rsync`, `ssh`, `curl`, `dig`, `jq`, `openssl` | Standard, all preinstalled on macOS/Linux |
-| Hetzner Cloud project + API token | The VPS |
+| Hetzner Cloud project + API token | Default VPS provider |
+| Vultr API key | Optional VPS provider via `--provider vultr` |
 | Cloudflare zone + API token (Zone:Read, DNS:Edit) | The subdomain + DNS |
 | At least one of: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | Hermes's runtime provider |
 
@@ -115,10 +120,10 @@ See [`secrets/README.md`](secrets/README.md) for the one-time age key setup.
 │   ├── deploy-client       # the single command
 │   ├── destroy-client      # terraform destroy + DNS cleanup
 │   └── lib/common.sh       # shared shell helpers (age, ssh, password)
-├── infra/                  # Terraform: Hetzner + Cloudflare + firewall
+├── infra/                  # Terraform: Hetzner/Vultr + Cloudflare + firewall
 │   ├── main.tf · variables.tf · outputs.tf · providers.tf · versions.tf
 │   ├── backend.tf.example  # remote state (B2 / S3-compatible)
-│   └── modules/{vps,dns,firewall}
+│   └── modules/{vps,vps-vultr,dns,firewall}
 ├── cloud-init/
 │   └── user-data.yaml.tmpl # Docker + deploy user + ufw + fail2ban
 ├── compose/
